@@ -5,7 +5,6 @@ CAPI 是一个轻量、清爽、面向大众用户的 AI 聚合网关。它兼�
 目标是提供一个更轻、更清楚、更像 iOS 原生应用体验的模型网关。
 
 
-<img width="2560" height="1298" alt="image" src="https://github.com/user-attachments/assets/848e3049-7c10-45f3-ba86-8e943cf920cd" />
 
 ## Features
 
