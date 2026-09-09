@@ -1,6 +1,6 @@
 # Contributing
 
-感谢关注 CatieAPI。
+感谢关注 CAPI。
 
 这个项目更适合做小而清楚的改动。欢迎提交：
 

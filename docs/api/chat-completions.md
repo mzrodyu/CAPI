@@ -1,6 +1,6 @@
 # Chat Completions
 
-CatieAPI 第一版提供 OpenAI compatible 的 `/v1/chat/completions` 接口。默认使用 mock provider，用于验证网关认证、模型解析、渠道选择、日志记录和额度扣减流程。设置 `PROVIDER_MODE=compatible` 后，请求会转发到渠道配置的 OpenAI-compatible 上游。
+CAPI 第一版提供 OpenAI compatible 的 `/v1/chat/completions` 接口。默认使用 mock provider，用于验证网关认证、模型解析、渠道选择、日志记录和额度扣减流程。设置 `PROVIDER_MODE=compatible` 后，请求会转发到渠道配置的 OpenAI-compatible 上游。
 
 ## Request
 
@@ -17,7 +17,7 @@ POST /chat/completions
 ## Headers
 
 ```text
-Authorization: Bearer <catieapi_key>
+Authorization: Bearer <capi_key>
 Content-Type: application/json
 Idempotency-Key: <optional_unique_key>
 ```
@@ -106,7 +106,7 @@ curl http://localhost:8787/v1/models \
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "CatieAPI mock response via OpenAI Compatible. Provider adapters can forward this request to an OpenAI-compatible upstream."
+        "content": "CAPI mock response via OpenAI Compatible. Provider adapters can forward this request to an OpenAI-compatible upstream."
       },
       "finish_reason": "stop"
     }
@@ -126,7 +126,7 @@ curl http://localhost:8787/v1/models \
 ```json
 {
   "error": {
-    "message": "Invalid CatieAPI key",
+    "message": "Invalid CAPI key",
     "type": "invalid_request_error",
     "code": "invalid_api_key"
   }
@@ -190,7 +190,7 @@ SECRET_KEY=<long_random_secret>
 https://provider.example/v1/chat/completions
 ```
 
-用户请求里的模型别名会先解析为 CatieAPI 的稳定模型 ID，再转发给上游。`stream: true` 会以 Server-Sent Events 透传上游响应。
+用户请求里的模型别名会先解析为 CAPI 的稳定模型 ID，再转发给上游。`stream: true` 会以 Server-Sent Events 透传上游响应。
 
 ## Billing
 

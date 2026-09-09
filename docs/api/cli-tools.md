@@ -1,6 +1,6 @@
 # 一键接入各大 CLI 工具
 
-CatieAPI 同时兼容两种主流协议，所以常见的 AI 命令行工具都能直接接入：
+CAPI 同时兼容两种主流协议，所以常见的 AI 命令行工具都能直接接入：
 
 - OpenAI 风格：`/v1/chat/completions`、`/v1/responses`（Codex CLI、Aider、Cline、opencode 等）
 - Anthropic Messages：`/v1/messages`（Claude Code）
@@ -10,7 +10,7 @@ CatieAPI 同时兼容两种主流协议，所以常见的 AI 命令行工具都�
 - Base URL：`https://shiliyuming.com`（省略 `/v1` 也可以）
 - API Key：`cat_你的_api_key`
 
-模型名填 CatieAPI 里的模型 ID 或别名，例如 `ds`、`gpt-5.5`。
+模型名填 CAPI 里的模型 ID 或别名，例如 `ds`、`gpt-5.5`。
 
 ## 一键脚本
 
@@ -33,7 +33,7 @@ BASE_URL="https://shiliyuming.com" API_KEY="cat_你的_api_key" MODEL="ds" \
 
 ## Claude Code
 
-Claude Code 走 Anthropic Messages 协议，对应 CatieAPI 的 `/v1/messages`。
+Claude Code 走 Anthropic Messages 协议，对应 CAPI 的 `/v1/messages`。
 
 设置环境变量：
 
@@ -52,9 +52,9 @@ claude
 
 说明：
 
-- `ANTHROPIC_AUTH_TOKEN` 会作为 `Authorization: Bearer` 发送，CatieAPI 也接受 `x-api-key`。
+- `ANTHROPIC_AUTH_TOKEN` 会作为 `Authorization: Bearer` 发送，CAPI 也接受 `x-api-key`。
 - Claude Code 会把请求发到 `ANTHROPIC_BASE_URL` + `/v1/messages`。
-- 模型名要填 CatieAPI 里存在的模型，否则返回 `not_found_error`。
+- 模型名要填 CAPI 里存在的模型，否则返回 `not_found_error`。
 
 ## Codex CLI
 
@@ -62,26 +62,26 @@ Codex CLI 走 OpenAI 协议。编辑 `~/.codex/config.toml`：
 
 ```toml
 model = "gpt-5.5"
-model_provider = "catieapi"
+model_provider = "capi"
 
-[model_providers.catieapi]
-name = "CatieAPI"
+[model_providers.capi]
+name = "CAPI"
 base_url = "https://shiliyuming.com/v1"
-env_key = "CATIEAPI_KEY"
+env_key = "CAPI_KEY"
 wire_api = "chat"
 ```
 
 设置 Key 并运行：
 
 ```bash
-export CATIEAPI_KEY="cat_你的_api_key"
+export CAPI_KEY="cat_你的_api_key"
 codex
 ```
 
 说明：
 
 - `wire_api = "chat"` 用 `/v1/chat/completions`，对各类上游模型兼容性最好。
-- 也可以设 `wire_api = "responses"`，对应 CatieAPI 的 `/v1/responses`。
+- 也可以设 `wire_api = "responses"`，对应 CAPI 的 `/v1/responses`。
 
 ## Aider
 
@@ -102,7 +102,7 @@ aider --model openai/ds
 - API Provider：`OpenAI Compatible`
 - Base URL：`https://shiliyuming.com/v1`
 - API Key：`cat_你的_api_key`
-- Model ID：`ds`（或其它 CatieAPI 模型）
+- Model ID：`ds`（或其它 CAPI 模型）
 
 ## opencode
 
@@ -112,22 +112,22 @@ aider --model openai/ds
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "catieapi": {
+    "capi": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "CatieAPI",
+      "name": "CAPI",
       "options": {
         "baseURL": "https://shiliyuming.com/v1",
         "apiKey": "cat_你的_api_key"
       },
       "models": {
-        "ds": { "name": "CatieAPI ds" }
+        "ds": { "name": "CAPI ds" }
       }
     }
   }
 }
 ```
 
-启动后选择 `catieapi/ds`。
+启动后选择 `capi/ds`。
 
 ## 通用 OpenAI SDK
 
@@ -151,11 +151,11 @@ print(response.choices[0].message.content)
 
 ## Gemini CLI
 
-Gemini CLI 使用 Google 自有协议，CatieAPI 暂不提供该协议的入站兼容，因此不能直接接入。需要 Gemini 系模型时，可在 CatieAPI 配置对应渠道，再用上面任意一个 OpenAI 协议工具调用。
+Gemini CLI 使用 Google 自有协议，CAPI 暂不提供该协议的入站兼容，因此不能直接接入。需要 Gemini 系模型时，可在 CAPI 配置对应渠道，再用上面任意一个 OpenAI 协议工具调用。
 
 ## 排查
 
-- `not_found_error` / `model_not_available`：模型名不在 CatieAPI 里，检查模型 ID 或别名。
+- `not_found_error` / `model_not_available`：模型名不在 CAPI 里，检查模型 ID 或别名。
 - `authentication_error` / `invalid_api_key`：Key 不对或没带上，确认环境变量已生效（重开终端）。
 - `permission_error` / `model_not_allowed`：这个 Key 被限制了可用模型范围。
 - 想确认服务连通，先用 curl 测 `/v1/messages` 或 `/v1/chat/completions`。

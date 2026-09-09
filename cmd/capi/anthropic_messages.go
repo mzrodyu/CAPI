@@ -11,7 +11,7 @@ import (
 )
 
 // This file implements the inbound Anthropic Messages API (POST /v1/messages).
-// It lets Anthropic-native clients (such as Claude Code) talk to CatieAPI using
+// It lets Anthropic-native clients (such as Claude Code) talk to CAPI using
 // their own protocol: the request is translated into the internal OpenAI chat
 // flow, routed through the same channels, quota, and logging as every other
 // gateway call, and the OpenAI chat.completion result is translated back into
@@ -65,7 +65,7 @@ func (s *Server) anthropicMessages(c *gin.Context) {
 	if auth == nil {
 		s.logGatewayFailureLocked(c, "invalid_api_key", "", "", body.Model, "")
 		s.mu.Unlock()
-		writeAnthropicError(c, http.StatusUnauthorized, "authentication_error", "Invalid CatieAPI key")
+		writeAnthropicError(c, http.StatusUnauthorized, "authentication_error", "Invalid CAPI key")
 		return
 	}
 	if auth.User.Status == "limited" {

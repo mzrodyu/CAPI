@@ -1,8 +1,8 @@
-# CatieAPI 文档方案
+# CAPI 文档方案
 
 ## 1. 文档目标
 
-CatieAPI 的文档要服务三类人：
+CAPI 的文档要服务三类人：
 
 - 普通用户：知道怎么创建 API Key、查看余额、复制调用示例。
 - 开发者：知道怎么调用兼容 OpenAI 的接口。
@@ -82,7 +82,7 @@ docs/
 
 内容：
 
-- `Authorization: Bearer <CatieAPI Key>`
+- `Authorization: Bearer <CAPI Key>`
 - API Key 权限
 - Key 泄露后的处理方式
 - 常见认证错误
@@ -195,7 +195,7 @@ Content-Type: application/json
 
 需要明确：
 
-- 为什么 CatieAPI 要比 NewAPI 更轻
+- 为什么 CAPI 要比 NewAPI 更轻
 - 哪些功能暂时不做
 - 普通用户和高级用户的取舍
 - 后台页面为什么不做大屏风格

@@ -20,7 +20,7 @@ assignees: ""
 
 ## Environment
 
-- CatieAPI version:
+- CAPI version:
 - Deployment: local / Docker / 1Panel
 - Persistence: file / postgres
 

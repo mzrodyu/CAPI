@@ -1,10 +1,10 @@
 # Discord 登录
 
-CatieAPI 支持 Discord OAuth2 登录，并可用服务器 ID 和身份组 ID 控制管理后台准入。
+CAPI 支持 Discord OAuth2 登录，并可用服务器 ID 和身份组 ID 控制管理后台准入。
 
 ## 后台配置
 
-推荐在 CatieAPI 的“设置”页面配置 Discord：
+推荐在 CAPI 的“设置”页面配置 Discord：
 
 1. 使用初始化时创建的管理员账号登录。
 2. 在“设置”中填写 Client ID、Client Secret 和回调地址。
@@ -54,7 +54,7 @@ https://api.example.com/api/auth/discord/callback
 http://localhost:8787/api/auth/discord/start
 ```
 
-CatieAPI 会请求这些 scope：
+CAPI 会请求这些 scope：
 
 ```text
 identify guilds.members.read
@@ -67,7 +67,7 @@ GET /users/@me
 GET /users/@me/guilds/{guild.id}/member
 ```
 
-通过校验后，后端写入 `catie_session` HttpOnly Cookie。绑定 Discord 用户 ID 后，会登录对应的本地账号；未绑定账号时仍按服务器和身份组规则判断。
+通过校验后，后端写入 `capi_session` HttpOnly Cookie。绑定 Discord 用户 ID 后，会登录对应的本地账号；未绑定账号时仍按服务器和身份组规则判断。
 
 `ADMIN_TOKEN` 仅作为可选的管理 API 应急凭证，不是网页后台的正常登录方式。
 

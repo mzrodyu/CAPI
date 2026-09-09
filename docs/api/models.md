@@ -1,6 +1,6 @@
 # Models
 
-CatieAPI 提供 OpenAI compatible 的模型列表接口。
+CAPI 提供 OpenAI compatible 的模型列表接口。
 
 ## List Models
 

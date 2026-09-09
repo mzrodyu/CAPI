@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    One-click setup to connect common AI CLI tools to a CatieAPI gateway.
+    One-click setup to connect common AI CLI tools to a CAPI gateway.
 
 .DESCRIPTION
     Sets the ANTHROPIC_* and OPENAI_* environment variables used by Claude Code,
@@ -10,11 +10,11 @@
     so new terminals pick them up, and also applied to the current session.
 
 .PARAMETER BaseUrl
-    CatieAPI base URL. Defaults to https://shiliyuming.com. The /v1 suffix is
+    CAPI base URL. Defaults to https://shiliyuming.com. The /v1 suffix is
     optional; the gateway accepts both.
 
 .PARAMETER ApiKey
-    CatieAPI key (cat_...). Prompted for when omitted.
+    CAPI key (cat_...). Prompted for when omitted.
 
 .PARAMETER Model
     Default model id or alias to use, e.g. ds or gpt-5.5.
@@ -41,7 +41,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-    $ApiKey = Read-Host "Enter your CatieAPI key (cat_...)"
+    $ApiKey = Read-Host "Enter your CAPI key (cat_...)"
 }
 if ([string]::IsNullOrWhiteSpace($ApiKey)) {
     Write-Error "An API key is required."
@@ -62,12 +62,12 @@ $vars = [ordered]@{
     "OPENAI_BASE_URL"           = $BaseUrl
     "OPENAI_API_BASE"           = $BaseUrl
     "OPENAI_API_KEY"            = $ApiKey
-    "CATIEAPI_BASE_URL"         = $BaseUrl
-    "CATIEAPI_KEY"              = $ApiKey
+    "CAPI_BASE_URL"         = $BaseUrl
+    "CAPI_KEY"              = $ApiKey
 }
 
 Write-Host ""
-Write-Host "Connecting CLI tools to CatieAPI" -ForegroundColor Cyan
+Write-Host "Connecting CLI tools to CAPI" -ForegroundColor Cyan
 Write-Host "  Base URL : $BaseUrl"
 Write-Host "  Model    : $Model (fast: $SmallModel)"
 Write-Host "  Scope    : $Scope"
@@ -89,12 +89,12 @@ $codexDir = Join-Path $HOME ".codex"
 $codexConfig = Join-Path $codexDir "config.toml"
 $codexBlock = @"
 model = "$Model"
-model_provider = "catieapi"
+model_provider = "capi"
 
-[model_providers.catieapi]
-name = "CatieAPI"
+[model_providers.capi]
+name = "CAPI"
 base_url = "$V1BaseUrl"
-env_key = "CATIEAPI_KEY"
+env_key = "CAPI_KEY"
 wire_api = "chat"
 "@
 

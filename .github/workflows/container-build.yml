@@ -14,7 +14,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/mzrodyu/catieapi
+  IMAGE_NAME: ghcr.io/mzrodyu/capi
 
 jobs:
   docker:

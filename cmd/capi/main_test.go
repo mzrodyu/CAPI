@@ -402,10 +402,10 @@ func TestFirstRunSetupLoginRegistrationAndRoleIsolation(t *testing.T) {
 	}
 
 	setup := perform(router, http.MethodPost, "/api/auth/setup", `{
-		"username":"catie",
+		"username":"capi",
 		"password":"correct-horse-battery",
-		"displayName":"Catie",
-		"email":"catie@example.com",
+		"displayName":"CAPI",
+		"email":"capi@example.com",
 		"discordUserId":"100000000000000001",
 		"registrationEnabled":true,
 		"registrationMode":"email",
@@ -440,11 +440,11 @@ func TestFirstRunSetupLoginRegistrationAndRoleIsolation(t *testing.T) {
 		t.Fatal("plain account password was stored")
 	}
 
-	badLogin := perform(router, http.MethodPost, "/api/auth/login", `{"identifier":"catie","password":"wrong-password"}`, nil)
+	badLogin := perform(router, http.MethodPost, "/api/auth/login", `{"identifier":"capi","password":"wrong-password"}`, nil)
 	if badLogin.Code != http.StatusUnauthorized {
 		t.Fatalf("bad login status = %d body = %s", badLogin.Code, badLogin.Body.String())
 	}
-	login := perform(router, http.MethodPost, "/api/auth/login", `{"identifier":"catie","password":"correct-horse-battery"}`, nil)
+	login := perform(router, http.MethodPost, "/api/auth/login", `{"identifier":"capi","password":"correct-horse-battery"}`, nil)
 	if login.Code != http.StatusOK {
 		t.Fatalf("login status = %d body = %s", login.Code, login.Body.String())
 	}
@@ -455,11 +455,11 @@ func TestFirstRunSetupLoginRegistrationAndRoleIsolation(t *testing.T) {
 	if passwordChange.Code != http.StatusOK {
 		t.Fatalf("password change status = %d body = %s", passwordChange.Code, passwordChange.Body.String())
 	}
-	oldPassword := perform(router, http.MethodPost, "/api/auth/login", `{"identifier":"catie","password":"correct-horse-battery"}`, nil)
+	oldPassword := perform(router, http.MethodPost, "/api/auth/login", `{"identifier":"capi","password":"correct-horse-battery"}`, nil)
 	if oldPassword.Code != http.StatusUnauthorized {
 		t.Fatalf("old password remained valid: %d body = %s", oldPassword.Code, oldPassword.Body.String())
 	}
-	newPassword := perform(router, http.MethodPost, "/api/auth/login", `{"identifier":"catie","password":"new-correct-password"}`, nil)
+	newPassword := perform(router, http.MethodPost, "/api/auth/login", `{"identifier":"capi","password":"new-correct-password"}`, nil)
 	if newPassword.Code != http.StatusOK {
 		t.Fatalf("new password login status = %d body = %s", newPassword.Code, newPassword.Body.String())
 	}
@@ -2825,7 +2825,7 @@ func TestAccountHealthCheckDueSkipsFreshChecks(t *testing.T) {
 	if accountHealthCheckDue(nowValue.Add(-time.Minute).Format(time.RFC3339Nano), time.Hour) {
 		t.Fatal("fresh account check should be skipped")
 	}
-	if !accountHealthCheckDue(nowValue.Add(-2 * time.Hour).Format(time.RFC3339Nano), time.Hour) {
+	if !accountHealthCheckDue(nowValue.Add(-2*time.Hour).Format(time.RFC3339Nano), time.Hour) {
 		t.Fatal("stale account check should run")
 	}
 	if !accountHealthCheckDue("", time.Hour) {
@@ -4103,7 +4103,7 @@ func TestDiscordOAuthRoleGateCreatesSessionForAdminRoutes(t *testing.T) {
 				t.Fatalf("discord user auth = %s", r.Header.Get("Authorization"))
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"dc_user_1","username":"catie","global_name":"Catie"}`))
+			_, _ = w.Write([]byte(`{"id":"dc_user_1","username":"capi","global_name":"CAPI"}`))
 		case "/api/v10/users/@me/guilds/guild_1/member":
 			memberPath = r.URL.Path
 			w.Header().Set("Content-Type", "application/json")
@@ -4175,7 +4175,7 @@ func TestBoundDiscordIDRestoresLocalAdminAccount(t *testing.T) {
 			_, _ = w.Write([]byte(`{"access_token":"discord-access","token_type":"Bearer"}`))
 		case "/api/v10/users/@me":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"` + discordUserID + `","username":"catie","global_name":"Catie"}`))
+			_, _ = w.Write([]byte(`{"id":"` + discordUserID + `","username":"capi","global_name":"CAPI"}`))
 		default:
 			t.Fatalf("unexpected Discord path for bound account: %s", r.URL.Path)
 		}
@@ -4194,7 +4194,7 @@ func TestBoundDiscordIDRestoresLocalAdminAccount(t *testing.T) {
 	})
 	router := testRouter(t)
 	setup := perform(router, http.MethodPost, "/api/auth/setup", `{
-		"username":"catie",
+		"username":"capi",
 		"password":"correct-horse-battery",
 		"discordUserId":"`+discordUserID+`"
 	}`, nil)
@@ -4274,7 +4274,7 @@ func TestDiscordSettingsCanBeManagedWithoutEnvironmentVariables(t *testing.T) {
 
 func TestStaticSPAFallbackDoesNotCaptureAPIRoutes(t *testing.T) {
 	staticDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("<html>CatieAPI</html>"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("<html>CAPI</html>"), 0644); err != nil {
 		t.Fatalf("write static index: %v", err)
 	}
 	withEnv(t, map[string]string{
@@ -4287,7 +4287,7 @@ func TestStaticSPAFallbackDoesNotCaptureAPIRoutes(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatalf("spa fallback status = %d body = %s", page.Code, page.Body.String())
 	}
-	if !bytes.Contains(page.Body.Bytes(), []byte("CatieAPI")) {
+	if !bytes.Contains(page.Body.Bytes(), []byte("CAPI")) {
 		t.Fatalf("spa fallback did not serve index: %s", page.Body.String())
 	}
 
@@ -4364,7 +4364,7 @@ func TestUsageLimitResetTimeParsesUpstreamFields(t *testing.T) {
 		t.Fatalf("resets_at parse = %v, want %v", got, future.UTC())
 	}
 	// resets_in_seconds (relative) is honored when resets_at is absent.
-	if got := usageLimitResetTime(0, 1800, now); !got.Equal(now.Add(30*time.Minute)) {
+	if got := usageLimitResetTime(0, 1800, now); !got.Equal(now.Add(30 * time.Minute)) {
 		t.Fatalf("resets_in_seconds parse = %v, want %v", got, now.Add(30*time.Minute))
 	}
 	// A past resets_at is ignored.

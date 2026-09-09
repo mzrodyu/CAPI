@@ -1,15 +1,15 @@
 {
-  "name": "catieapi",
+  "name": "capi",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm:dev:web\" \"npm:dev:api\"",
     "dev:web": "vite --host 0.0.0.0",
-    "dev:api": "go run ./cmd/catieapi",
+    "dev:api": "go run ./cmd/capi",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "start": "go run ./cmd/catieapi"
+    "start": "go run ./cmd/capi"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",

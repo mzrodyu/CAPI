@@ -182,6 +182,7 @@ type Channel struct {
 	Provider          string          `json:"provider"`
 	BaseURL           string          `json:"baseUrl"`
 	UpstreamAPIKey    string          `json:"upstreamApiKey,omitempty"`
+	UpstreamAPIKeys   []string        `json:"upstreamApiKeys,omitempty"`
 	OpenAIAccounts    []OpenAIAccount `json:"openaiAccounts,omitempty"`
 	Status            string          `json:"status"`
 	StreamMode        string          `json:"streamMode"`
@@ -202,6 +203,7 @@ type PublicChannel struct {
 	Provider           string                `json:"provider"`
 	BaseURL            string                `json:"baseUrl"`
 	UpstreamKeySet     bool                  `json:"upstreamKeySet"`
+	UpstreamKeyCount   int                   `json:"upstreamKeyCount"`
 	OpenAIAccountCount int                   `json:"openaiAccountCount"`
 	OpenAIAccounts     []PublicOpenAIAccount `json:"openaiAccounts,omitempty"`
 	Status             string                `json:"status"`
@@ -356,6 +358,7 @@ type QuotaEntry struct {
 type Server struct {
 	mu                    sync.Mutex
 	openAIRefreshMu       sync.Mutex
+	keyRotationMu         sync.Mutex
 	state                 AppState
 	dataFile              string
 	databaseURL           string
@@ -389,6 +392,7 @@ type Server struct {
 	sessions              map[string]Session
 	openAIOAuthFlows      map[string]openAIOAuthFlow
 	requestAccounts       map[string]string
+	keyRotationOffsets    map[string]int
 }
 
 // openAIOAuthFlow tracks one in-progress ChatGPT OAuth (PKCE) authorization so
@@ -582,7 +586,7 @@ func main() {
 	server.registerRoutes(router)
 
 	addr := ":" + env("PORT", "8787")
-	fmt.Printf("CatieAPI Go server listening on http://localhost%s\n", addr)
+	fmt.Printf("CAPI Go server listening on http://localhost%s\n", addr)
 	if err := router.Run(addr); err != nil {
 		panic(err)
 	}
@@ -709,6 +713,7 @@ func NewServer() *Server {
 		sessions:              map[string]Session{},
 		openAIOAuthFlows:      map[string]openAIOAuthFlow{},
 		requestAccounts:       map[string]string{},
+		keyRotationOffsets:    map[string]int{},
 	}
 	s.webHTTPClient = newChatGPTWebHTTPClient(s.upstreamTimeout)
 	s.initStorage()
@@ -1071,7 +1076,7 @@ func (s *Server) accountMiddleware() gin.HandlerFunc {
 func (s *Server) health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"ok":           true,
-		"name":         "CatieAPI",
+		"name":         "CAPI",
 		"mode":         s.persistence,
 		"providerMode": s.providerMode,
 		"version":      buildVersion,
@@ -1470,7 +1475,7 @@ func (s *Server) exportBackup(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "备份生成失败"}})
 		return
 	}
-	filename := "catieapi-backup-" + time.Now().UTC().Format("20060102-150405") + ".json"
+	filename := "capi-backup-" + time.Now().UTC().Format("20060102-150405") + ".json"
 	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
 	c.Data(http.StatusOK, "application/json; charset=utf-8", append(content, '\n'))
 }
@@ -1527,6 +1532,14 @@ func (s *Server) validateBackupState(state AppState) error {
 		}
 		if strings.TrimSpace(channel.UpstreamAPIKey) != "" {
 			if _, err := s.revealSecret(channel.UpstreamAPIKey); err != nil {
+				return fmt.Errorf("渠道密钥无法解密，请使用导出备份时的 SECRET_KEY")
+			}
+		}
+		for _, pooledKey := range channel.UpstreamAPIKeys {
+			if strings.TrimSpace(pooledKey) == "" {
+				continue
+			}
+			if _, err := s.revealSecret(pooledKey); err != nil {
 				return fmt.Errorf("渠道密钥无法解密，请使用导出备份时的 SECRET_KEY")
 			}
 		}
@@ -1867,14 +1880,14 @@ func (s *Server) currentSession(c *gin.Context) {
 }
 
 func (s *Server) logout(c *gin.Context) {
-	cookie, err := c.Cookie("catie_session")
+	cookie, err := c.Cookie("capi_session")
 	if err == nil && cookie != "" {
 		s.mu.Lock()
 		delete(s.sessions, cookie)
 		s.mu.Unlock()
 	}
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     "catie_session",
+		Name:     "capi_session",
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
@@ -2507,6 +2520,7 @@ func (s *Server) createChannel(c *gin.Context) {
 		Provider         string   `json:"provider"`
 		BaseURL          string   `json:"baseUrl"`
 		UpstreamAPIKey   string   `json:"upstreamApiKey"`
+		UpstreamAPIKeys  []string `json:"upstreamApiKeys"`
 		StreamMode       string   `json:"streamMode"`
 		Priority         int      `json:"priority"`
 		Weight           int      `json:"weight"`
@@ -2543,9 +2557,15 @@ func (s *Server) createChannel(c *gin.Context) {
 		validationError(c, "Channel price must be greater than or equal to 0")
 		return
 	}
+	// A multi-key pool takes precedence over the single key when provided, so a
+	// channel with many accounts can rotate across their keys.
+	protectedPool, err := s.protectKeyPool(body.UpstreamAPIKeys)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "Failed to protect upstream keys"}})
+		return
+	}
 	protectedKey := ""
-	if strings.TrimSpace(body.UpstreamAPIKey) != "" {
-		var err error
+	if len(protectedPool) == 0 && strings.TrimSpace(body.UpstreamAPIKey) != "" {
 		protectedKey, err = s.protectSecret(strings.TrimSpace(body.UpstreamAPIKey))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "Failed to protect upstream key"}})
@@ -2559,6 +2579,7 @@ func (s *Server) createChannel(c *gin.Context) {
 		Provider:          body.Provider,
 		BaseURL:           strings.TrimRight(body.BaseURL, "/"),
 		UpstreamAPIKey:    protectedKey,
+		UpstreamAPIKeys:   protectedPool,
 		Status:            "disabled",
 		StreamMode:        body.StreamMode,
 		Priority:          body.Priority,
@@ -3256,6 +3277,18 @@ func (s *Server) updateChannel(c *gin.Context) {
 		}
 		channel.BaseURL = strings.TrimRight(value, "/")
 	}
+	if raw, ok := patch["upstreamApiKeys"].([]interface{}); ok {
+		pool, err := s.protectKeyPool(stringSlice(raw))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "Failed to protect upstream keys"}})
+			return
+		}
+		channel.UpstreamAPIKeys = pool
+		if len(pool) > 0 {
+			// A key pool supersedes the single upstream key to avoid ambiguity.
+			channel.UpstreamAPIKey = ""
+		}
+	}
 	if value, ok := patch["upstreamApiKey"].(string); ok {
 		protected, err := s.protectSecret(strings.TrimSpace(value))
 		if err != nil {
@@ -3263,6 +3296,10 @@ func (s *Server) updateChannel(c *gin.Context) {
 			return
 		}
 		channel.UpstreamAPIKey = protected
+		if strings.TrimSpace(value) != "" {
+			// Setting a single key clears any existing pool.
+			channel.UpstreamAPIKeys = nil
+		}
 	}
 	if value, ok := asInt(patch["priority"]); ok {
 		if value < 1 {
@@ -3844,7 +3881,7 @@ func (s *Server) embeddings(c *gin.Context) {
 	s.mu.Lock()
 	auth := s.findUserByAPIKeyLocked(apiTokenFromRequest(c))
 	if auth == nil {
-		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CatieAPI key", "invalid_request_error", nil, "", "", body.Model, "")
+		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CAPI key", "invalid_request_error", nil, "", "", body.Model, "")
 		s.mu.Unlock()
 		return
 	}
@@ -3920,7 +3957,7 @@ func (s *Server) audioSpeech(c *gin.Context) {
 	s.mu.Lock()
 	auth := s.findUserByAPIKeyLocked(apiTokenFromRequest(c))
 	if auth == nil {
-		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CatieAPI key", "invalid_request_error", nil, "", "", body.Model, "")
+		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CAPI key", "invalid_request_error", nil, "", "", body.Model, "")
 		s.mu.Unlock()
 		return
 	}
@@ -3995,7 +4032,7 @@ func (s *Server) moderations(c *gin.Context) {
 	s.mu.Lock()
 	auth := s.findUserByAPIKeyLocked(apiTokenFromRequest(c))
 	if auth == nil {
-		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CatieAPI key", "invalid_request_error", nil, "", "", requestedModel, "")
+		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CAPI key", "invalid_request_error", nil, "", "", requestedModel, "")
 		s.mu.Unlock()
 		return
 	}
@@ -4053,7 +4090,7 @@ func (s *Server) chatCompletions(c *gin.Context) {
 	if idempotencyKey != "" {
 		if cached, ok := s.idempotencyCache[idempotencyKey]; ok {
 			s.mu.Unlock()
-			c.Header("x-catieapi-cache", "idempotency")
+			c.Header("x-capi-cache", "idempotency")
 			c.JSON(cached.Status, cached.Body)
 			return
 		}
@@ -4262,7 +4299,7 @@ func (s *Server) handleImageGeneration(c *gin.Context, body ImageRequest, starte
 
 	auth := s.findUserByAPIKeyLocked(apiTokenFromRequest(c))
 	if auth == nil {
-		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CatieAPI key", "invalid_request_error", nil, "", "", body.Model, "")
+		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CAPI key", "invalid_request_error", nil, "", "", body.Model, "")
 		s.mu.Unlock()
 		return
 	}
@@ -4366,7 +4403,7 @@ func (s *Server) handleChatCompletionWithTransform(c *gin.Context, body ChatRequ
 
 	auth := s.findUserByAPIKeyLocked(apiTokenFromRequest(c))
 	if auth == nil {
-		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CatieAPI key", "invalid_request_error", nil, "", "", body.Model, "")
+		s.openAIErrorForCallLocked(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CAPI key", "invalid_request_error", nil, "", "", body.Model, "")
 		s.mu.Unlock()
 		return
 	}
@@ -4689,7 +4726,7 @@ func (s *Server) callProvider(call GatewayCall) (gin.H, *ProviderError) {
 				"index": 0,
 				"message": gin.H{
 					"role":    "assistant",
-					"content": fmt.Sprintf("CatieAPI mock response via %s. Provider adapters can forward this request to an OpenAI-compatible upstream.", call.Channel.Name),
+					"content": fmt.Sprintf("CAPI mock response via %s. Provider adapters can forward this request to an OpenAI-compatible upstream.", call.Channel.Name),
 				},
 				"finish_reason": "stop",
 			},
@@ -7209,7 +7246,7 @@ func (s *Server) shouldUseCompatibleProvider(channel Channel) bool {
 	if isCodexChannel(channel) && len(channel.OpenAIAccounts) > 0 {
 		return true
 	}
-	return strings.TrimSpace(channel.BaseURL) != "" && (strings.TrimSpace(channel.UpstreamAPIKey) != "" || len(channel.OpenAIAccounts) > 0 || strings.TrimSpace(s.upstreamAPIKey) != "")
+	return strings.TrimSpace(channel.BaseURL) != "" && (strings.TrimSpace(channel.UpstreamAPIKey) != "" || len(channel.UpstreamAPIKeys) > 0 || len(channel.OpenAIAccounts) > 0 || strings.TrimSpace(s.upstreamAPIKey) != "")
 }
 
 func shouldFallbackStreamToNonStream(providerErr *ProviderError, channel Channel) bool {
@@ -7540,7 +7577,7 @@ func (s *Server) writeProviderStream(c *gin.Context, call GatewayCall) *Provider
 			"model":   call.Model.ID,
 			"choices": []gin.H{{
 				"index":         0,
-				"delta":         gin.H{"role": "assistant", "content": fmt.Sprintf("CatieAPI mock stream via %s.", call.Channel.Name)},
+				"delta":         gin.H{"role": "assistant", "content": fmt.Sprintf("CAPI mock stream via %s.", call.Channel.Name)},
 				"finish_reason": nil,
 			}},
 		},
@@ -7863,7 +7900,7 @@ func (s *Server) createAccountSession(account Account, displayName string, provi
 func (s *Server) setSessionCookie(c *gin.Context, session Session) {
 	expiresAt, _ := time.Parse(time.RFC3339Nano, session.ExpiresAt)
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     "catie_session",
+		Name:     "capi_session",
 		Value:    session.ID,
 		Path:     "/",
 		HttpOnly: true,
@@ -7874,7 +7911,7 @@ func (s *Server) setSessionCookie(c *gin.Context, session Session) {
 }
 
 func (s *Server) sessionFromRequest(c *gin.Context) (Session, bool) {
-	cookie, err := c.Cookie("catie_session")
+	cookie, err := c.Cookie("capi_session")
 	if err != nil || cookie == "" {
 		return Session{}, false
 	}
@@ -8825,7 +8862,7 @@ func (s *Server) openAIAPIKeyAuthLocked(c *gin.Context) (*AuthContext, bool) {
 	}
 	auth := s.findUserByAPIKeyLocked(token)
 	if auth == nil {
-		writeOpenAIError(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CatieAPI key", "invalid_request_error", nil)
+		writeOpenAIError(c, http.StatusUnauthorized, "invalid_api_key", "Invalid CAPI key", "invalid_request_error", nil)
 		return nil, false
 	}
 	return auth, true
@@ -8990,7 +9027,81 @@ func (s *Server) channelCandidatesLocked(modelID string) []Channel {
 		}
 		return candidates[i].ID < candidates[j].ID
 	})
-	return candidates
+	return s.expandChannelKeyPoolLocked(candidates)
+}
+
+// expandChannelKeyPoolLocked turns each channel that has a multi-key pool into a
+// sequence of per-key candidates so the existing per-candidate failover loop
+// rotates across the keys and skips a failing one. The plaintext key is placed
+// on a transient copy's UpstreamAPIKey; revealSecret passes plaintext through,
+// so every downstream forwarder keeps working unchanged. Channels without a key
+// pool (or that use an OpenAI account pool) are returned untouched, so the
+// original single-key behavior is preserved exactly. Callers must hold s.mu.
+func (s *Server) expandChannelKeyPoolLocked(candidates []Channel) []Channel {
+	hasPool := false
+	for _, channel := range candidates {
+		if len(channel.UpstreamAPIKeys) > 0 && len(channel.OpenAIAccounts) == 0 {
+			hasPool = true
+			break
+		}
+	}
+	if !hasPool {
+		return candidates
+	}
+	expanded := make([]Channel, 0, len(candidates))
+	for _, channel := range candidates {
+		if len(channel.UpstreamAPIKeys) == 0 || len(channel.OpenAIAccounts) > 0 {
+			expanded = append(expanded, channel)
+			continue
+		}
+		keys := s.revealChannelKeyPoolLocked(channel)
+		if len(keys) == 0 {
+			expanded = append(expanded, channel)
+			continue
+		}
+		offset := s.nextKeyRotationOffset(channel.ID, len(keys))
+		for i := 0; i < len(keys); i++ {
+			variant := channel
+			variant.UpstreamAPIKey = keys[(offset+i)%len(keys)]
+			variant.UpstreamAPIKeys = nil
+			expanded = append(expanded, variant)
+		}
+	}
+	return expanded
+}
+
+// revealChannelKeyPoolLocked decrypts a channel's key pool into de-duplicated
+// plaintext keys, dropping entries that fail to decrypt or are blank.
+func (s *Server) revealChannelKeyPoolLocked(channel Channel) []string {
+	keys := make([]string, 0, len(channel.UpstreamAPIKeys))
+	seen := map[string]bool{}
+	for _, stored := range channel.UpstreamAPIKeys {
+		revealed, err := s.revealSecret(stored)
+		if err != nil {
+			continue
+		}
+		revealed = strings.TrimSpace(revealed)
+		if revealed == "" || seen[revealed] {
+			continue
+		}
+		seen[revealed] = true
+		keys = append(keys, revealed)
+	}
+	return keys
+}
+
+// nextKeyRotationOffset returns a rotating start index for a channel's key pool
+// so consecutive requests begin with a different key and spread load evenly. It
+// uses its own mutex to stay independent of the main state lock.
+func (s *Server) nextKeyRotationOffset(channelID string, count int) int {
+	if count <= 1 {
+		return 0
+	}
+	s.keyRotationMu.Lock()
+	defer s.keyRotationMu.Unlock()
+	offset := s.keyRotationOffsets[channelID] % count
+	s.keyRotationOffsets[channelID] = (offset + 1) % count
+	return offset
 }
 
 func (s *Server) updateChannelRuntimeHealth(channelID string, healthy bool, message string) {
@@ -9246,7 +9357,7 @@ func (s *Server) applyPersistedDiscordSettings() {
 	}
 	secret, err := s.revealSecret(settings.ClientSecret)
 	if err != nil {
-		fmt.Printf("CatieAPI could not decrypt Discord Client Secret: %v\n", err)
+		fmt.Printf("CAPI could not decrypt Discord Client Secret: %v\n", err)
 		secret = ""
 	}
 	s.discordClientID = settings.ClientID
@@ -9545,17 +9656,17 @@ func (s *Server) initStorage() {
 
 func (s *Server) ensurePostgresSchema() {
 	_, err := s.db.Exec(`
-CREATE TABLE IF NOT EXISTS catie_state (
+CREATE TABLE IF NOT EXISTS capi_state (
   id text PRIMARY KEY,
   data jsonb NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS catie_schema_migrations (
+CREATE TABLE IF NOT EXISTS capi_schema_migrations (
   version integer PRIMARY KEY,
   name text NOT NULL,
   applied_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO catie_schema_migrations (version, name)
+INSERT INTO capi_schema_migrations (version, name)
 VALUES (1, 'state_jsonb_snapshot')
 ON CONFLICT (version) DO NOTHING;
 `)
@@ -9569,7 +9680,7 @@ func (s *Server) loadPostgresState() {
 		return
 	}
 	var content []byte
-	err := s.db.QueryRow(`SELECT data FROM catie_state WHERE id = $1`, "default").Scan(&content)
+	err := s.db.QueryRow(`SELECT data FROM capi_state WHERE id = $1`, "default").Scan(&content)
 	if err == sql.ErrNoRows {
 		s.savePostgresStateLocked()
 		return
@@ -9629,7 +9740,7 @@ func (s *Server) savePostgresStateLocked() {
 		return
 	}
 	_, err = s.db.Exec(`
-INSERT INTO catie_state (id, data, updated_at)
+INSERT INTO capi_state (id, data, updated_at)
 VALUES ($1, $2::jsonb, now())
 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
 `, "default", string(content))
@@ -9766,6 +9877,27 @@ func (s *Server) protectSecret(secret string) (string, error) {
 	}
 	ciphertext := aead.Seal(nil, nonce, []byte(secret), nil)
 	return "enc:v1:" + base64.RawURLEncoding.EncodeToString(nonce) + ":" + base64.RawURLEncoding.EncodeToString(ciphertext), nil
+}
+
+// protectKeyPool trims, de-duplicates, and encrypts a list of raw upstream keys
+// for a channel key pool. Blank entries are dropped so an empty pool clears the
+// field. Each stored entry uses the same AES-GCM envelope as a single key.
+func (s *Server) protectKeyPool(raw []string) ([]string, error) {
+	protected := make([]string, 0, len(raw))
+	seen := map[string]bool{}
+	for _, item := range raw {
+		key := strings.TrimSpace(item)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		stored, err := s.protectSecret(key)
+		if err != nil {
+			return nil, err
+		}
+		protected = append(protected, stored)
+	}
+	return protected, nil
 }
 
 func (s *Server) revealSecret(secret string) (string, error) {
@@ -10629,7 +10761,8 @@ func publicChannel(channel Channel) PublicChannel {
 		Name:               channel.Name,
 		Provider:           channel.Provider,
 		BaseURL:            channel.BaseURL,
-		UpstreamKeySet:     strings.TrimSpace(channel.UpstreamAPIKey) != "",
+		UpstreamKeySet:     strings.TrimSpace(channel.UpstreamAPIKey) != "" || len(channel.UpstreamAPIKeys) > 0,
+		UpstreamKeyCount:   len(channel.UpstreamAPIKeys),
 		OpenAIAccountCount: len(channel.OpenAIAccounts),
 		OpenAIAccounts:     accounts,
 		Status:             channel.Status,

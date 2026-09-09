@@ -1,6 +1,6 @@
 # 1Panel 部署
 
-CatieAPI 推荐在 1Panel 的容器或运行环境里配置环境变量，不需要进入服务器手动编辑 `.env` 文件。仓库里的 `.env.example` 只是变量清单。
+CAPI 推荐在 1Panel 的容器或运行环境里配置环境变量，不需要进入服务器手动编辑 `.env` 文件。仓库里的 `.env.example` 只是变量清单。
 
 ## 容器方式
 
@@ -9,7 +9,7 @@ CatieAPI 推荐在 1Panel 的容器或运行环境里配置环境变量，不需
 镜像：
 
 ```text
-ghcr.io/mzrodyu/catieapi:latest
+ghcr.io/mzrodyu/capi:latest
 ```
 
 端口：
@@ -33,7 +33,7 @@ CORS_ORIGIN=*
 
 | 变量 | 作用 |
 | --- | --- |
-| `PORT` | CatieAPI 容器内监听端口，默认 `8787`。 |
+| `PORT` | CAPI 容器内监听端口，默认 `8787`。 |
 | `STATIC_DIR` | 前端静态文件目录，容器镜像内固定用 `/app/dist`。 |
 | `PERSISTENCE` | 持久化方式。生产建议 `postgres`。 |
 | `DATABASE_URL` | Postgres 连接地址。注意容器里不要写 `localhost`，要写 1Panel 提供的数据库主机或服务名。 |
@@ -93,8 +93,8 @@ UPSTREAM_TIMEOUT_SECONDS=600
 推送到 `main` 后，GitHub Actions 会自动构建并发布镜像：
 
 ```text
-ghcr.io/mzrodyu/catieapi:latest
-ghcr.io/mzrodyu/catieapi:sha-提交哈希
+ghcr.io/mzrodyu/capi:latest
+ghcr.io/mzrodyu/capi:sha-提交哈希
 ```
 
 如果 1Panel 拉取失败，检查 GitHub 仓库的 Package 可见性。公开项目建议把 package 设置为 Public，这样 1Panel 不需要额外登录 GHCR。
@@ -119,8 +119,8 @@ https://your-domain.example/api/auth/discord/callback
 
 - 不需要在生产服务器编辑 `.env`
 - 数据库连接和加密密钥由 1Panel 环境变量提供
-- 管理员账号、密码和日常设置在 CatieAPI 页面中管理
-- Discord 登录等日常配置优先在 CatieAPI 后台管理
+- 管理员账号、密码和日常设置在 CAPI 页面中管理
+- Discord 登录等日常配置优先在 CAPI 后台管理
 - `.env.example` 只用于查看变量名和默认值
 - `SECRET_KEY` 上线后不要随意更换，否则已加密的渠道上游 Key 无法解密
 - 可选的 `ADMIN_TOKEN` 和 `DISCORD_CLIENT_SECRET` 不要提交到 Git 仓库

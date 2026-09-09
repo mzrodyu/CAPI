@@ -1,4 +1,4 @@
-module catieapi
+module capi
 
 go 1.26
 

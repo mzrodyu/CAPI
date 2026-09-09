@@ -1,6 +1,6 @@
-# CatieAPI
+# CAPI
 
-CatieAPI 是一个轻量、清爽、面向大众用户的 AI 聚合网关。它兼容 OpenAI 风格接口，但不要求用户记住复杂路径：Base URL 可以直接填写 `https://shiliyuming.com`，不用写 `https://shiliyuming.com/v1`。
+CAPI 是一个轻量、清爽、面向大众用户的 AI 聚合网关。它兼容 OpenAI 风格接口，但不要求用户记住复杂路径：Base URL 可以直接填写 `https://shiliyuming.com`，不用写 `https://shiliyuming.com/v1`。
 
 目标是提供一个更轻、更清楚、更像 iOS 原生应用体验的模型网关。
 
@@ -58,7 +58,7 @@ const response = await client.chat.completions.create({
 
 ## License
 
-PolyForm Noncommercial License 1.0.0. Copyright (c) 2026 Catie.
+PolyForm Noncommercial License 1.0.0. Copyright (c) 2026 CAPI.
 
 本项目源码公开用于学习、研究、评估和非商业自部署。未经作者书面许可，不允许商业使用、SaaS 转售、二次闭源分发，或作为商业产品、商业服务的一部分提供。
 

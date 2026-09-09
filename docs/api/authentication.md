@@ -1,11 +1,11 @@
 # API 认证
 
-CatieAPI 使用 Bearer Token 认证。
+CAPI 使用 Bearer Token 认证。
 
 ## Header
 
 ```text
-Authorization: Bearer <catieapi_key>
+Authorization: Bearer <capi_key>
 ```
 
 ## 示例
@@ -39,7 +39,7 @@ cat_你的_api_key
 ```json
 {
   "error": {
-    "message": "Invalid CatieAPI key",
+    "message": "Invalid CAPI key",
     "type": "invalid_request_error",
     "code": "invalid_api_key"
   }
@@ -55,4 +55,4 @@ curl http://localhost:8787/api/users \
   -H "Authorization: Bearer <admin_token>"
 ```
 
-也可以启用 Discord OAuth 登录。登录成功后，后端会写入 `catie_session` HttpOnly Cookie，管理接口会接受该 session。可通过 `DISCORD_ALLOWED_GUILD_ID` 限制服务器成员，通过 `DISCORD_ALLOWED_ROLE_ID` 限制身份组。
+也可以启用 Discord OAuth 登录。登录成功后，后端会写入 `capi_session` HttpOnly Cookie，管理接口会接受该 session。可通过 `DISCORD_ALLOWED_GUILD_ID` 限制服务器成员，通过 `DISCORD_ALLOWED_ROLE_ID` 限制身份组。

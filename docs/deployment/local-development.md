@@ -26,7 +26,7 @@ npm run dev
 
 Vite 会把 `/api` 和 `/v1` 请求代理到本地 API 服务。
 
-当前 API 服务使用 Go + Gin，入口位于 `cmd/catieapi/main.go`。
+当前 API 服务使用 Go + Gin，入口位于 `cmd/capi/main.go`。
 
 ## 环境变量
 
@@ -42,7 +42,7 @@ SESSION_TTL_HOURS=168
 REQUEST_LIMIT_PER_MINUTE=60
 PERSISTENCE=file
 DATA_FILE=data/state.json
-DATABASE_URL=postgres://catieapi:catieapi@localhost:5432/catieapi?sslmode=disable
+DATABASE_URL=postgres://capi:capi@localhost:5432/capi?sslmode=disable
 DATABASE_MAX_OPEN_CONNS=10
 DATABASE_MAX_IDLE_CONNS=5
 DATABASE_CONN_MAX_LIFETIME_MINUTES=30
@@ -176,7 +176,7 @@ curl http://localhost:8787/v1/chat/completions \
 
 ```text
 PERSISTENCE=postgres
-DATABASE_URL=postgres://catieapi:catieapi@localhost:5432/catieapi?sslmode=disable
+DATABASE_URL=postgres://capi:capi@localhost:5432/capi?sslmode=disable
 ```
 
 详细说明见 [Postgres 持久化](postgres.md)。

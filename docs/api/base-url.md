@@ -1,6 +1,6 @@
 # Base URL
 
-CatieAPI 的核心体验是少填一段路径。
+CAPI 的核心体验是少填一段路径。
 
 传统 OpenAI-compatible 网关通常要求：
 
@@ -8,7 +8,7 @@ CatieAPI 的核心体验是少填一段路径。
 https://shiliyuming.com/v1
 ```
 
-CatieAPI 可以直接填写：
+CAPI 可以直接填写：
 
 ```text
 https://shiliyuming.com

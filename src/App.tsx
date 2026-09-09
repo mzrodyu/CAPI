@@ -46,8 +46,11 @@ type Channel = {
   provider: string;
   baseUrl: string;
   upstreamKeySet?: boolean;
+  upstreamKeyCount?: number;
   openaiAccountCount?: number;
   openaiAccounts?: OpenAIAccount[];
+  kiroAccountCount?: number;
+  kiroAccounts?: KiroAccount[];
   status: string;
   streamMode: "auto" | "real" | "fake" | "disabled";
   priority: number;
@@ -63,6 +66,7 @@ type Channel = {
 
 type ChannelPatch = Partial<Channel> & {
   upstreamApiKey?: string;
+  upstreamApiKeys?: string[];
 };
 
 type ChannelCreate = {
@@ -71,6 +75,7 @@ type ChannelCreate = {
   baseUrl: string;
   models: string[];
   upstreamApiKey?: string;
+  upstreamApiKeys?: string[];
   streamMode?: Channel["streamMode"];
 };
 
@@ -140,6 +145,47 @@ type OpenAIAccountCheckResult = {
   healthy: number;
   failed: number;
   accounts: OpenAIAccount[];
+  channel: Channel;
+};
+
+type KiroAccount = {
+  id: string;
+  email?: string;
+  name?: string;
+  provider?: "BuilderId" | "Google" | "Github" | "Enterprise";
+  authMethod?: "builder_id" | "social" | "external_idp";
+  region?: string;
+  profileArn?: string;
+  planType?: string;
+  status?: string;
+  expiresAt?: string;
+  lastRefresh?: string;
+  lastCheckedAt?: string;
+  lastUsedAt?: string;
+  lastError?: string;
+  lastErrorCode?: string;
+  requestCount?: number;
+  creditsUsed?: number;
+  creditsLimit?: number;
+  importedAt?: string;
+  hasAccessToken?: boolean;
+  hasRefreshToken?: boolean;
+};
+
+type KiroAccountImportResult = {
+  imported: number;
+  created?: number;
+  updated?: number;
+  skipped: number;
+  accounts: KiroAccount[];
+  channel: Channel;
+};
+
+type KiroAccountCheckResult = {
+  checked: number;
+  healthy: number;
+  failed: number;
+  accounts: KiroAccount[];
   channel: Channel;
 };
 
@@ -258,7 +304,7 @@ function mergeUniqueStrings(values: string[]) {
 
 function normalizeChannel(channel: Channel): Channel {
   const streamMode = streamModeOptions.some((option) => option.value === channel.streamMode) ? channel.streamMode : "auto";
-  return { ...channel, streamMode, models: arrayOf(channel.models), openaiAccounts: arrayOf(channel.openaiAccounts) };
+  return { ...channel, streamMode, models: arrayOf(channel.models), openaiAccounts: arrayOf(channel.openaiAccounts), kiroAccounts: arrayOf(channel.kiroAccounts) };
 }
 
 function normalizeModel(model: ModelItem): ModelItem {
@@ -330,7 +376,7 @@ function Icon({ name }: { name: IconName }) {
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Content-Type", "application/json");
-  const adminToken = window.sessionStorage.getItem("catieapi-admin-token");
+  const adminToken = window.sessionStorage.getItem("capi-admin-token");
   if (adminToken) headers.set("Authorization", `Bearer ${adminToken}`);
   const response = await fetch(url, {
     credentials: "include",
@@ -346,7 +392,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 async function fetchFormJson<T>(url: string, body: FormData): Promise<T> {
   const headers = new Headers();
-  const adminToken = window.sessionStorage.getItem("catieapi-admin-token");
+  const adminToken = window.sessionStorage.getItem("capi-admin-token");
   if (adminToken) headers.set("Authorization", `Bearer ${adminToken}`);
   const response = await fetch(url, {
     credentials: "include",
@@ -373,6 +419,7 @@ const navItems = [
 ] as const;
 
 const providerOptions = [
+  { value: "kiro", label: "Kiro / Amazon Q" },
   { value: "codex", label: "Codex / ChatGPT OAuth" },
   { value: "cpa", label: "CPA / CLIProxyAPI" },
   { value: "openai", label: "OpenAI" },
@@ -389,11 +436,20 @@ const providerOptions = [
 const defaultOpenAIBaseURL = "https://api.openai.com/v1";
 const defaultCodexBaseURL = "https://chatgpt.com/backend-api";
 const defaultCPABaseURL = "http://localhost:8317/v1";
+const defaultKiroBaseURL = "https://codewhisperer.us-east-1.amazonaws.com";
 const defaultCodexModels = "gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, gpt-image-2, gpt-image-1";
 const defaultOpenAIModels = "gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, gpt-image-2";
 const defaultCPAModels = "gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, claude-sonnet-4, gemini-3.1-pro";
+const defaultKiroModels = "claude-sonnet-4.5, claude-sonnet-4, claude-haiku-4.5, claude-opus-4.5";
 
 const channelTemplates = [
+  {
+    provider: "kiro",
+    label: "Kiro / Amazon Q",
+    name: "Kiro 账号池",
+    baseUrl: defaultKiroBaseURL,
+    models: defaultKiroModels.split(",").map((model) => model.trim())
+  },
   {
     provider: "openai",
     label: "OpenAI",
@@ -483,11 +539,32 @@ function defaultBaseURLForProvider(provider: string) {
   if (provider === "openai") return defaultOpenAIBaseURL;
   if (provider === "codex") return defaultCodexBaseURL;
   if (provider === "cpa" || provider === "cliproxyapi") return defaultCPABaseURL;
+  if (provider === "kiro") return defaultKiroBaseURL;
   return "";
 }
 
 function modelTextToList(value: string) {
   return mergeUniqueStrings(value.split(/[\s,;，；]+/));
+}
+
+// parseUpstreamKeyLines splits the multi-line key box into a de-duplicated list.
+// One key per line, but commas and spaces are tolerated so pasted lists work.
+function parseUpstreamKeyLines(value: string) {
+  return mergeUniqueStrings(value.split(/[\n,;，；]+/).map((item) => item.trim()));
+}
+
+// upstreamKeyFields turns the key box text into the channel payload fields. A
+// single key uses the original upstreamApiKey field (unchanged behavior); two
+// or more keys use the upstreamApiKeys pool. An empty box clears the pool.
+function upstreamKeyFields(value: string): { upstreamApiKey?: string; upstreamApiKeys?: string[] } {
+  const keys = parseUpstreamKeyLines(value);
+  if (keys.length === 0) {
+    return {};
+  }
+  if (keys.length === 1) {
+    return { upstreamApiKey: keys[0] };
+  }
+  return { upstreamApiKeys: keys };
 }
 
 const streamModeOptions = [
@@ -703,7 +780,7 @@ function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [active, setActive] = useState<(typeof navItems)[number]["id"]>("overview");
   const [theme, setTheme] = useState<"light" | "dark">(() => {
-    const saved = window.localStorage.getItem("catieapi-theme");
+    const saved = window.localStorage.getItem("capi-theme");
     if (saved === "light" || saved === "dark") return saved;
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });
@@ -1033,7 +1110,7 @@ function App() {
 
   async function logout() {
     await fetchJson("/api/auth/logout", { method: "POST" });
-    window.sessionStorage.removeItem("catieapi-admin-token");
+    window.sessionStorage.removeItem("capi-admin-token");
     setAuthStatus(null);
     setSurface("home");
   }
@@ -1050,7 +1127,7 @@ function App() {
   }, [selectedUserId, surface, consoleReady]);
 
   useEffect(() => {
-    window.localStorage.setItem("catieapi-theme", theme);
+    window.localStorage.setItem("capi-theme", theme);
   }, [theme]);
 
   useEffect(() => {
@@ -1093,7 +1170,7 @@ function App() {
         <div className="brand">
           <div className="brand-mark">C</div>
           <div>
-            <strong>CatieAPI</strong>
+            <strong>CAPI</strong>
             <span>聚合网关</span>
           </div>
         </div>
@@ -1284,7 +1361,7 @@ function AuthScreen({
       <header className="auth-topbar">
         <button className="auth-brand" onClick={goHome}>
           <span className="brand-mark">C</span>
-          <strong>CatieAPI</strong>
+          <strong>CAPI</strong>
         </button>
         <button className="theme-toggle" aria-label="切换暗色模式" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
           <Icon name={theme === "dark" ? "sun" : "moon"} />
@@ -1295,8 +1372,8 @@ function AuthScreen({
       <section className="auth-stage">
         <div className="auth-intro">
           <span>{isSetup ? "First Run" : "Welcome Back"}</span>
-          <h1>{isSetup ? "初始化 CatieAPI" : isRegister ? "创建账号" : "登录"}</h1>
-          <p>{isSetup ? "创建第一个管理员账号，完成后即可进入控制台。" : "使用你的 CatieAPI 账号继续。"}</p>
+          <h1>{isSetup ? "初始化 CAPI" : isRegister ? "创建账号" : "登录"}</h1>
+          <p>{isSetup ? "创建第一个管理员账号，完成后即可进入控制台。" : "使用你的 CAPI 账号继续。"}</p>
         </div>
 
         <form
@@ -1321,7 +1398,7 @@ function AuthScreen({
               {mode !== "login" && (
                 <label>
                   <span>显示名称</span>
-                  <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" placeholder="Catie" />
+                  <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" placeholder="CAPI" />
                 </label>
               )}
               {!isEmailRegister && (
@@ -1484,7 +1561,7 @@ function AccountHome({
       <header className="account-topbar">
         <button className="auth-brand" onClick={goHome}>
           <span className="brand-mark">C</span>
-          <strong>CatieAPI</strong>
+          <strong>CAPI</strong>
         </button>
         <div className="account-actions">
           <button className="theme-toggle" aria-label="切换暗色模式" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
@@ -1497,7 +1574,7 @@ function AccountHome({
       <section className="account-content">
         <div className="account-heading">
           <div>
-            <p className="eyebrow">My CatieAPI</p>
+            <p className="eyebrow">My CAPI</p>
             <h1>{data?.user.name || "账户"}</h1>
           </div>
           <div className="account-balance">
@@ -1557,7 +1634,7 @@ function PublicHome({
         <div className="home-brand">
           <div className="brand-mark">C</div>
           <div>
-            <strong>CatieAPI</strong>
+            <strong>CAPI</strong>
             <span>AI 聚合网关</span>
           </div>
         </div>
@@ -1576,7 +1653,7 @@ function PublicHome({
         <div className="home-copy">
           <span className="home-kicker">兼容 OpenAI 格式的网关</span>
           <h1>
-            CatieAPI
+            CAPI
             <span>轻量 AI 聚合网关</span>
           </h1>
           <p>面向个人用户和团队的模型接入层。把 API Key、额度、模型渠道和调用日志放在一个清爽控制台里，保持轻量，也便于排障。</p>
@@ -1595,14 +1672,14 @@ function PublicHome({
           </div>
         </div>
 
-        <div className="gateway-terminal" aria-label="CatieAPI 终端请求示意">
+        <div className="gateway-terminal" aria-label="CAPI 终端请求示意">
           <div className="terminal-titlebar">
             <div className="terminal-dots" aria-hidden="true">
               <span />
               <span />
               <span />
             </div>
-            <strong>CatieAPI Terminal</strong>
+            <strong>CAPI Terminal</strong>
             <div className="terminal-status">
               <span className="pulse-dot" />
               <strong>Online</strong>
@@ -1615,24 +1692,24 @@ function PublicHome({
           <div className="terminal-body">
             <div className="terminal-block">
               <span>REQUEST</span>
-              <pre>{`curl https://api.catie.local/v1/chat/completions \\
+              <pre>{`curl https://api.capi.local/v1/chat/completions \\
   -H "Authorization: Bearer cat_..." \\
   -d '{
-    "model": "catie-fast",
+    "model": "capi-fast",
     "messages": [{ "role": "user", "content": "ping" }]
   }'`}</pre>
             </div>
             <div className="terminal-route">
               <div><span>auth</span><strong>pass</strong></div>
               <div><span>quota</span><strong>ok</strong></div>
-              <div><span>route</span><strong>catie-fast</strong></div>
+              <div><span>route</span><strong>capi-fast</strong></div>
               <div><span>latency</span><strong>186ms</strong></div>
             </div>
             <div className="terminal-block response">
               <span>RESPONSE</span>
               <pre>{`{
   "status": 200,
-  "model": "catie-fast",
+  "model": "capi-fast",
   "usage": { "total_tokens": 27 },
   "message": "request routed"
 }`}<span className="terminal-caret" aria-hidden="true" /></pre>
@@ -1661,8 +1738,8 @@ function OverviewView({
       <div className="hero-strip">
         <div>
           <span>Live Gateway</span>
-          <strong>CatieAPI 网关正在服务 {overview?.activeUsers ?? "-"} 个活跃用户</strong>
-          <p>请求进入 CatieAPI 后，会按额度、模型和渠道状态自动选择最合适的上游。</p>
+          <strong>CAPI 网关正在服务 {overview?.activeUsers ?? "-"} 个活跃用户</strong>
+          <p>请求进入 CAPI 后，会按额度、模型和渠道状态自动选择最合适的上游。</p>
         </div>
         <div className="live-island">
           <div className="pulse-dot" />
@@ -3064,6 +3141,8 @@ function channelCapabilities(channel: Channel) {
   if (channel.streamMode !== "disabled") capabilities.push("流式");
   if (/(image|dall-e|gpt-image)/.test(modelText)) capabilities.push("图片");
   if ((channel.openaiAccountCount ?? channel.openaiAccounts?.length ?? 0) > 0) capabilities.push("账号池");
+  const keyCount = channel.upstreamKeyCount ?? 0;
+  if (keyCount > 1) capabilities.push(`${keyCount} Key 轮询`);
   return capabilities;
 }
 
@@ -3119,7 +3198,7 @@ function ChannelsView({
         name: name.trim() || channelTemplateFor(provider).name,
         provider,
         baseUrl: baseUrl.trim(),
-        upstreamApiKey: upstreamApiKey.trim() || undefined,
+        ...upstreamKeyFields(upstreamApiKey),
         models: modelTextToList(models),
         streamMode: "auto"
       });
@@ -3180,9 +3259,9 @@ function ChannelsView({
               <span>Base URL</span>
               <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://provider.example/v1" />
             </label>
-            <label>
+            <label className="channel-form-wide">
               <span>上游 Key</span>
-              <input type="password" value={upstreamApiKey} onChange={(event) => setUpstreamApiKey(event.target.value)} placeholder={provider === "codex" ? "账号池导入后使用" : provider === "cpa" ? "填写 CPA 的 API key" : "可先留空，稍后编辑"} autoComplete="new-password" />
+              <textarea className="channel-key-input" value={upstreamApiKey} onChange={(event) => setUpstreamApiKey(event.target.value)} placeholder={provider === "codex" ? "账号池导入后使用" : provider === "cpa" ? "填写 CPA 的 API key，多个每行一个" : "每行一个 Key；填多个会自动轮询分发"} autoComplete="off" rows={3} />
             </label>
             <div className="channel-form-wide channel-model-field">
               <div className="field-label-row">
@@ -3295,9 +3374,7 @@ function ChannelEditor({
         .map((model) => model.trim())
         .filter(Boolean)
     };
-    if (upstreamApiKey.trim()) {
-      patch.upstreamApiKey = upstreamApiKey.trim();
-    }
+    Object.assign(patch, upstreamKeyFields(upstreamApiKey));
     return patch;
   }
 
@@ -3474,9 +3551,9 @@ function ChannelEditor({
             </button>
           </div>
         </div>
-        <label>
-          <span>上游 Key</span>
-          <input type="password" value={upstreamApiKey} onChange={(event) => setUpstreamApiKey(event.target.value)} placeholder={provider === "codex" ? "Codex 账号池不需要上游 Key" : provider === "cpa" ? "填写 CPA 的 API key" : "留空表示不修改"} autoComplete="new-password" />
+        <label className="channel-form-wide">
+          <span>上游 Key{(channel.upstreamKeyCount ?? 0) > 0 ? ` (已配置 ${channel.upstreamKeyCount} 个)` : channel.upstreamKeySet ? " (已配置)" : ""}</span>
+          <textarea className="channel-key-input" value={upstreamApiKey} onChange={(event) => setUpstreamApiKey(event.target.value)} placeholder={provider === "codex" ? "Codex 账号池不需要上游 Key" : provider === "cpa" ? "填写 CPA 的 API key，多个每行一个" : "每行一个 Key；填多个会自动轮询分发；留空不修改"} autoComplete="off" rows={3} />
         </label>
         <label>
           <span>输入单价 / 1K Token</span>
@@ -3859,7 +3936,7 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
       if (!response.ok) throw new Error("备份导出失败");
       const blob = await response.blob();
       const disposition = response.headers.get("Content-Disposition") || "";
-      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "catieapi-backup.json";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "capi-backup.json";
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -3928,7 +4005,7 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
 
       {settingsTab === "cli" && (
       <Panel title="CLI 工具接入">
-        <p className="cli-intro">CatieAPI 兼容 OpenAI 和 Anthropic 协议，常见 AI 命令行工具可直接接入。</p>
+        <p className="cli-intro">CAPI 兼容 OpenAI 和 Anthropic 协议，常见 AI 命令行工具可直接接入。</p>
         <div className="cli-credentials">
           <div className="cli-credential">
             <span>Base URL</span>
@@ -3960,15 +4037,15 @@ claude`}</pre>
             </summary>
             <p>编辑 <code>~/.codex/config.toml</code>：</p>
             <pre>{`model = "${defaultModel}"
-model_provider = "catieapi"
+model_provider = "capi"
 
-[model_providers.catieapi]
-name = "CatieAPI"
+[model_providers.capi]
+name = "CAPI"
 base_url = "${currentOrigin()}/v1"
-env_key = "CATIEAPI_KEY"
+env_key = "CAPI_KEY"
 wire_api = "chat"`}</pre>
             <p>然后设置环境变量并运行：</p>
-            <pre>{`export CATIEAPI_KEY="cat_你的_api_key"
+            <pre>{`export CAPI_KEY="cat_你的_api_key"
 codex`}</pre>
           </details>
           <details className="cli-tool">

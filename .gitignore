@@ -13,4 +13,4 @@ output/
 npm-debug.log*
 *.tsbuildinfo
 *.exe
-/catieapi
+/capi

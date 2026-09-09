@@ -18,15 +18,15 @@ RUN go mod download
 COPY cmd ./cmd
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags "-s -w -X main.buildVersion=${BUILD_VERSION} -X main.buildCommit=${BUILD_COMMIT} -X main.buildTime=${BUILD_TIME}" \
-    -o /out/catieapi ./cmd/catieapi
+    -o /out/capi ./cmd/capi
 
 FROM alpine:3.22
 WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata
-COPY --from=api-builder /out/catieapi /app/catieapi
+COPY --from=api-builder /out/capi /app/capi
 COPY --from=web-builder /app/dist /app/dist
 ENV PORT=8787
 ENV STATIC_DIR=/app/dist
 ENV PERSISTENCE=postgres
 EXPOSE 8787
-CMD ["/app/catieapi"]
+CMD ["/app/capi"]
