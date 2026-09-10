@@ -4844,3 +4844,77 @@ func TestOwnAPIKeyCanBeDeletedByOwner(t *testing.T) {
 	}
 }
 
+
+func TestStaticServingSetsCacheHeadersForSPAEntryPoint(t *testing.T) {
+	staticDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(staticDir, "assets"), 0755); err != nil {
+		t.Fatalf("create assets dir: %v", err)
+	}
+	writeFile := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(staticDir, name), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	writeFile("index.html", "<!doctype html><div id=\"root\"></div>")
+	writeFile(filepath.Join("assets", "index-CkIGdnVN.js"), "console.log(1)")
+	writeFile(filepath.Join("assets", "index-BvkROHFS.css"), "body{}")
+	writeFile("favicon.svg", "<svg/>")
+
+	withEnv(t, map[string]string{"PERSISTENCE": "memory", "STATIC_DIR": staticDir})
+	_, router := testServerRouter(t)
+
+	cacheControlFor := func(path string) string {
+		t.Helper()
+		response := perform(router, http.MethodGet, path, "", nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d body = %s", path, response.Code, response.Body.String())
+		}
+		return response.Header().Get("Cache-Control")
+	}
+
+	// The entry point must always revalidate, including for unmatched SPA routes.
+	for _, path := range []string{"/", "/users", "/some/deep/link"} {
+		if got := cacheControlFor(path); got != "no-cache, must-revalidate" {
+			t.Fatalf("index.html cache-control for %s = %q, want revalidation", path, got)
+		}
+	}
+
+	// Content-hashed build assets are immutable, so they cache for a year.
+	for _, path := range []string{"/assets/index-CkIGdnVN.js", "/assets/index-BvkROHFS.css"} {
+		if got := cacheControlFor(path); got != "public, max-age=31536000, immutable" {
+			t.Fatalf("hashed asset cache-control for %s = %q", path, got)
+		}
+	}
+
+	// A non-hashed file must not be treated as immutable.
+	if got := cacheControlFor("/favicon.svg"); got != "no-cache, must-revalidate" {
+		t.Fatalf("favicon cache-control = %q, want revalidation", got)
+	}
+}
+
+func TestIsImmutableBuildAsset(t *testing.T) {
+	immutable := []string{
+		"assets/index-CkIGdnVN.js",
+		"index-BvkROHFS.css",
+		"assets/chunk-AbCdEf12.js",
+		"assets/x-________.js",
+	}
+	for _, path := range immutable {
+		if !isImmutableBuildAsset(path) {
+			t.Fatalf("isImmutableBuildAsset(%q) = false, want true", path)
+		}
+	}
+	mutable := []string{
+		"index.html",
+		"favicon.svg",
+		"assets/short-abc.js",
+		"assets/name-with space.js",
+		"assets/noextension",
+	}
+	for _, path := range mutable {
+		if isImmutableBuildAsset(path) {
+			t.Fatalf("isImmutableBuildAsset(%q) = true, want false", path)
+		}
+	}
+}
