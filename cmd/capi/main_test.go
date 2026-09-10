@@ -1491,6 +1491,102 @@ func TestSyncChannelModelsPullsFromUpstream(t *testing.T) {
 	}
 }
 
+func TestPreviewUpstreamModelsListsWithoutCommitting(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("upstream path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"preview-model-a"},{"id":"preview-model-b"}]}`))
+	}))
+	defer upstream.Close()
+
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	_, router := testServerRouter(t)
+
+	created := perform(router, http.MethodPost, "/api/channels", `{"name":"Upstream","baseUrl":"`+upstream.URL+`/v1","upstreamApiKey":"preview-secret","models":["existing-model"]}`, nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create channel status = %d body = %s", created.Code, created.Body.String())
+	}
+	var payload struct {
+		Channel PublicChannel `json:"channel"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode channel: %v", err)
+	}
+
+	preview := perform(router, http.MethodPost, "/api/channels/"+payload.Channel.ID+"/upstream-models", `{}`, nil)
+	if preview.Code != http.StatusOK {
+		t.Fatalf("preview status = %d body = %s", preview.Code, preview.Body.String())
+	}
+	if !bytes.Contains(preview.Body.Bytes(), []byte(`preview-model-a`)) || !bytes.Contains(preview.Body.Bytes(), []byte(`preview-model-b`)) {
+		t.Fatalf("preview missing upstream ids: %s", preview.Body.String())
+	}
+
+	// Preview is read-only: it must not attach models to the channel or create
+	// catalog entries the way sync-models does.
+	channels := perform(router, http.MethodGet, "/api/channels", "", nil)
+	if bytes.Contains(channels.Body.Bytes(), []byte(`preview-model-a`)) {
+		t.Fatalf("preview should not attach models to channel: %s", channels.Body.String())
+	}
+	models := perform(router, http.MethodGet, "/api/models", "", nil)
+	if bytes.Contains(models.Body.Bytes(), []byte(`"id":"preview-model-a"`)) {
+		t.Fatalf("preview should not create catalog models: %s", models.Body.String())
+	}
+}
+
+func TestSyncChannelModelsAcceptsExplicitSelection(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"provider-model-a"},{"id":"provider-model-b"},{"id":"provider-model-c"}]}`))
+	}))
+	defer upstream.Close()
+
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	_, router := testServerRouter(t)
+
+	created := perform(router, http.MethodPost, "/api/channels", `{"name":"Upstream","baseUrl":"`+upstream.URL+`/v1","upstreamApiKey":"sync-secret","models":["stale-provider-model"]}`, nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create channel status = %d body = %s", created.Code, created.Body.String())
+	}
+	var payload struct {
+		Channel PublicChannel `json:"channel"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode channel: %v", err)
+	}
+
+	// An explicit selection commits exactly those models and must not query upstream.
+	synced := perform(router, http.MethodPost, "/api/channels/"+payload.Channel.ID+"/sync-models", `{"models":["provider-model-a","provider-model-c"]}`, nil)
+	if synced.Code != http.StatusOK {
+		t.Fatalf("sync models status = %d body = %s", synced.Code, synced.Body.String())
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("explicit selection should not query upstream, hits = %d", upstreamHits)
+	}
+
+	channels := perform(router, http.MethodGet, "/api/channels", "", nil)
+	if !bytes.Contains(channels.Body.Bytes(), []byte(`provider-model-a`)) || !bytes.Contains(channels.Body.Bytes(), []byte(`provider-model-c`)) {
+		t.Fatalf("channel missing selected models: %s", channels.Body.String())
+	}
+	if bytes.Contains(channels.Body.Bytes(), []byte(`provider-model-b`)) {
+		t.Fatalf("channel should not contain unselected model: %s", channels.Body.String())
+	}
+	if bytes.Contains(channels.Body.Bytes(), []byte(`stale-provider-model`)) {
+		t.Fatalf("stale model should be replaced by selection: %s", channels.Body.String())
+	}
+
+	models := perform(router, http.MethodGet, "/api/models", "", nil)
+	if !bytes.Contains(models.Body.Bytes(), []byte(`"id":"provider-model-a"`)) {
+		t.Fatalf("selected model was not created in catalog: %s", models.Body.String())
+	}
+	if bytes.Contains(models.Body.Bytes(), []byte(`"id":"provider-model-b"`)) {
+		t.Fatalf("unselected model should not be created in catalog: %s", models.Body.String())
+	}
+}
+
 func TestSyncChannelModelsRetriesWithAnthropicAuth(t *testing.T) {
 	requests := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4225,6 +4321,111 @@ func TestDiscordOAuthRoleGateCreatesSessionForAdminRoutes(t *testing.T) {
 	users := perform(router, http.MethodGet, "/api/users", "", map[string]string{"Cookie": cookies[0].Name + "=" + cookies[0].Value})
 	if users.Code != http.StatusOK {
 		t.Fatalf("session did not authorize admin route: %d body = %s", users.Code, users.Body.String())
+	}
+}
+
+func TestDiscordBlockedGuildDeniesLogin(t *testing.T) {
+	blockedGuildID := "999000111000111000"
+	discord := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"discord-access","token_type":"Bearer","expires_in":3600,"scope":"identify guilds.members.read guilds"}`))
+		case "/api/v10/users/@me":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"dc_user_blocked","username":"capi","global_name":"CAPI"}`))
+		case "/api/v10/users/@me/guilds":
+			if r.Header.Get("Authorization") != "Bearer discord-access" {
+				t.Fatalf("guild list auth = %s", r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"id":"111","name":"Fine"},{"id":"` + blockedGuildID + `","name":"Blocked"}]`))
+		default:
+			t.Fatalf("unexpected discord path: %s", r.URL.Path)
+		}
+	}))
+	defer discord.Close()
+
+	withEnv(t, map[string]string{
+		"PERSISTENCE":               "memory",
+		"ADMIN_TOKEN":               "admin-secret",
+		"DISCORD_CLIENT_ID":         "client-id",
+		"DISCORD_CLIENT_SECRET":     "client-secret",
+		"DISCORD_REDIRECT_URI":      "http://localhost:8787/api/auth/discord/callback",
+		"DISCORD_BLOCKED_GUILD_IDS": blockedGuildID,
+		"DISCORD_OAUTH_BASE":        discord.URL + "/oauth2",
+		"DISCORD_API_BASE":          discord.URL + "/api/v10",
+		"AUTH_SUCCESS_URL":          "http://localhost:5173/",
+	})
+	router := testRouter(t)
+
+	start := perform(router, http.MethodGet, "/api/auth/discord/start", "", nil)
+	if start.Code != http.StatusFound {
+		t.Fatalf("discord start status = %d body = %s", start.Code, start.Body.String())
+	}
+	authURL, err := url.Parse(start.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+	if !strings.Contains(authURL.Query().Get("scope"), "guilds.members.read guilds") {
+		t.Fatalf("blocked-guild config should append the guilds scope: %s", authURL.Query().Get("scope"))
+	}
+	state := authURL.Query().Get("state")
+
+	callback := perform(router, http.MethodGet, "/api/auth/discord/callback?code=oauth-code&state="+url.QueryEscape(state), "", nil)
+	if callback.Code != http.StatusForbidden {
+		t.Fatalf("blocked guild member should be denied, status = %d body = %s", callback.Code, callback.Body.String())
+	}
+	if len(callback.Result().Cookies()) != 0 {
+		t.Fatal("blocked guild member should not receive a session cookie")
+	}
+}
+
+func TestDiscordBlockedGuildAllowsNonMember(t *testing.T) {
+	blockedGuildID := "999000111000111000"
+	discord := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"discord-access","token_type":"Bearer","expires_in":3600}`))
+		case "/api/v10/users/@me":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"dc_user_ok","username":"capi","global_name":"CAPI"}`))
+		case "/api/v10/users/@me/guilds":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"id":"111","name":"Fine"},{"id":"222","name":"Also Fine"}]`))
+		default:
+			t.Fatalf("unexpected discord path: %s", r.URL.Path)
+		}
+	}))
+	defer discord.Close()
+
+	withEnv(t, map[string]string{
+		"PERSISTENCE":               "memory",
+		"ADMIN_TOKEN":               "admin-secret",
+		"DISCORD_CLIENT_ID":         "client-id",
+		"DISCORD_CLIENT_SECRET":     "client-secret",
+		"DISCORD_REDIRECT_URI":      "http://localhost:8787/api/auth/discord/callback",
+		"DISCORD_BLOCKED_GUILD_IDS": blockedGuildID,
+		"DISCORD_OAUTH_BASE":        discord.URL + "/oauth2",
+		"DISCORD_API_BASE":          discord.URL + "/api/v10",
+		"AUTH_SUCCESS_URL":          "http://localhost:5173/",
+	})
+	router := testRouter(t)
+
+	start := perform(router, http.MethodGet, "/api/auth/discord/start", "", nil)
+	authURL, err := url.Parse(start.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+	state := authURL.Query().Get("state")
+
+	callback := perform(router, http.MethodGet, "/api/auth/discord/callback?code=oauth-code&state="+url.QueryEscape(state), "", nil)
+	if callback.Code != http.StatusFound {
+		t.Fatalf("non-member should be allowed, status = %d body = %s", callback.Code, callback.Body.String())
+	}
+	if len(callback.Result().Cookies()) == 0 {
+		t.Fatal("non-member should receive a session cookie")
 	}
 }
 

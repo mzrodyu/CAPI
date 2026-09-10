@@ -121,26 +121,28 @@ type Account struct {
 }
 
 type DiscordSettings struct {
-	Managed         bool   `json:"managed,omitempty"`
-	Enabled         bool   `json:"enabled"`
-	ClientID        string `json:"clientId,omitempty"`
-	ClientSecret    string `json:"clientSecret,omitempty"`
-	RedirectURI     string `json:"redirectUri,omitempty"`
-	AllowedGuildID  string `json:"allowedGuildId,omitempty"`
-	AllowedRoleID   string `json:"allowedRoleId,omitempty"`
-	AuthSuccessURL  string `json:"authSuccessUrl,omitempty"`
-	SessionTTLHours int    `json:"sessionTtlHours,omitempty"`
+	Managed         bool     `json:"managed,omitempty"`
+	Enabled         bool     `json:"enabled"`
+	ClientID        string   `json:"clientId,omitempty"`
+	ClientSecret    string   `json:"clientSecret,omitempty"`
+	RedirectURI     string   `json:"redirectUri,omitempty"`
+	AllowedGuildID  string   `json:"allowedGuildId,omitempty"`
+	AllowedRoleID   string   `json:"allowedRoleId,omitempty"`
+	BlockedGuildIDs []string `json:"blockedGuildIds,omitempty"`
+	AuthSuccessURL  string   `json:"authSuccessUrl,omitempty"`
+	SessionTTLHours int      `json:"sessionTtlHours,omitempty"`
 }
 
 type PublicDiscordSettings struct {
-	Enabled         bool   `json:"enabled"`
-	ClientID        string `json:"clientId"`
-	ClientSecretSet bool   `json:"clientSecretSet"`
-	RedirectURI     string `json:"redirectUri"`
-	AllowedGuildID  string `json:"allowedGuildId"`
-	AllowedRoleID   string `json:"allowedRoleId"`
-	AuthSuccessURL  string `json:"authSuccessUrl"`
-	SessionTTLHours int    `json:"sessionTtlHours"`
+	Enabled         bool     `json:"enabled"`
+	ClientID        string   `json:"clientId"`
+	ClientSecretSet bool     `json:"clientSecretSet"`
+	RedirectURI     string   `json:"redirectUri"`
+	AllowedGuildID  string   `json:"allowedGuildId"`
+	AllowedRoleID   string   `json:"allowedRoleId"`
+	BlockedGuildIDs []string `json:"blockedGuildIds"`
+	AuthSuccessURL  string   `json:"authSuccessUrl"`
+	SessionTTLHours int      `json:"sessionTtlHours"`
 }
 
 type User struct {
@@ -374,43 +376,44 @@ type CheckInRecord struct {
 }
 
 type Server struct {
-	mu                    sync.Mutex
-	openAIRefreshMu       sync.Mutex
-	keyRotationMu         sync.Mutex
-	state                 AppState
-	dataFile              string
-	databaseURL           string
-	staticDir             string
-	db                    *sql.DB
-	persistence           string
-	corsOrigin            string
-	adminToken            string
-	secretKey             []byte
-	requestLimitPerMinute int
-	providerMode          string
-	upstreamAPIKey        string
-	upstreamTimeout       time.Duration
-	httpClient            *http.Client
-	webHTTPClient         *http.Client
-	chatGPTAPIBase        string
-	openAIAuthBase        string
-	discordClientID       string
-	discordClientSecret   string
-	discordRedirectURI    string
-	discordAllowedGuildID string
-	discordAllowedRoleID  string
-	discordOAuthBase      string
-	discordAPIBase        string
-	authSuccessURL        string
-	sessionTTL            time.Duration
-	accountHealthInterval time.Duration
-	rateLimitBuckets      map[string]int
-	idempotencyCache      map[string]CachedResponse
-	authStates            map[string]time.Time
-	sessions              map[string]Session
-	openAIOAuthFlows      map[string]openAIOAuthFlow
-	requestAccounts       map[string]string
-	keyRotationOffsets    map[string]int
+	mu                     sync.Mutex
+	openAIRefreshMu        sync.Mutex
+	keyRotationMu          sync.Mutex
+	state                  AppState
+	dataFile               string
+	databaseURL            string
+	staticDir              string
+	db                     *sql.DB
+	persistence            string
+	corsOrigin             string
+	adminToken             string
+	secretKey              []byte
+	requestLimitPerMinute  int
+	providerMode           string
+	upstreamAPIKey         string
+	upstreamTimeout        time.Duration
+	httpClient             *http.Client
+	webHTTPClient          *http.Client
+	chatGPTAPIBase         string
+	openAIAuthBase         string
+	discordClientID        string
+	discordClientSecret    string
+	discordRedirectURI     string
+	discordAllowedGuildID  string
+	discordAllowedRoleID   string
+	discordBlockedGuildIDs []string
+	discordOAuthBase       string
+	discordAPIBase         string
+	authSuccessURL         string
+	sessionTTL             time.Duration
+	accountHealthInterval  time.Duration
+	rateLimitBuckets       map[string]int
+	idempotencyCache       map[string]CachedResponse
+	authStates             map[string]time.Time
+	sessions               map[string]Session
+	openAIOAuthFlows       map[string]openAIOAuthFlow
+	requestAccounts        map[string]string
+	keyRotationOffsets     map[string]int
 }
 
 // openAIOAuthFlow tracks one in-progress ChatGPT OAuth (PKCE) authorization so
@@ -575,20 +578,28 @@ type DiscordUser struct {
 	Avatar        string `json:"avatar"`
 }
 
+// DiscordUserGuild is a partial guild object from GET /users/@me/guilds, used to
+// enforce the blocked-server list (requires the "guilds" OAuth scope).
+type DiscordUserGuild struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type DiscordGuildMember struct {
 	User  DiscordUser `json:"user"`
 	Roles []string    `json:"roles"`
 }
 
 type DiscordRuntimeConfig struct {
-	ClientID       string
-	ClientSecret   string
-	RedirectURI    string
-	AllowedGuildID string
-	AllowedRoleID  string
-	OAuthBase      string
-	AuthSuccessURL string
-	SessionTTL     time.Duration
+	ClientID        string
+	ClientSecret    string
+	RedirectURI     string
+	AllowedGuildID  string
+	AllowedRoleID   string
+	BlockedGuildIDs []string
+	OAuthBase       string
+	AuthSuccessURL  string
+	SessionTTL      time.Duration
 }
 
 func main() {
@@ -700,38 +711,39 @@ func NewServer() *Server {
 	dataFile := env("DATA_FILE", "data/state.json")
 
 	s := &Server{
-		state:                 defaultState(),
-		dataFile:              dataFile,
-		databaseURL:           env("DATABASE_URL", ""),
-		staticDir:             env("STATIC_DIR", "dist"),
-		persistence:           persistence,
-		corsOrigin:            normalizeCORSOriginConfig(env("CORS_ORIGIN", "*")),
-		adminToken:            env("ADMIN_TOKEN", ""),
-		secretKey:             deriveSecretKey(env("SECRET_KEY", "")),
-		requestLimitPerMinute: envInt("REQUEST_LIMIT_PER_MINUTE", 60),
-		providerMode:          env("PROVIDER_MODE", "mock"),
-		upstreamAPIKey:        env("UPSTREAM_API_KEY", ""),
-		upstreamTimeout:       time.Duration(envInt("UPSTREAM_TIMEOUT_SECONDS", defaultUpstreamTimeoutSeconds)) * time.Second,
-		httpClient:            &http.Client{Timeout: time.Duration(envInt("UPSTREAM_TIMEOUT_SECONDS", defaultUpstreamTimeoutSeconds)) * time.Second},
-		chatGPTAPIBase:        env("CHATGPT_API_BASE", defaultChatGPTAPIBaseURL),
-		openAIAuthBase:        env("OPENAI_AUTH_BASE", "https://auth.openai.com"),
-		discordClientID:       env("DISCORD_CLIENT_ID", ""),
-		discordClientSecret:   env("DISCORD_CLIENT_SECRET", ""),
-		discordRedirectURI:    env("DISCORD_REDIRECT_URI", ""),
-		discordAllowedGuildID: env("DISCORD_ALLOWED_GUILD_ID", ""),
-		discordAllowedRoleID:  env("DISCORD_ALLOWED_ROLE_ID", ""),
-		discordOAuthBase:      env("DISCORD_OAUTH_BASE", "https://discord.com/api/oauth2"),
-		discordAPIBase:        env("DISCORD_API_BASE", "https://discord.com/api/v10"),
-		authSuccessURL:        env("AUTH_SUCCESS_URL", ""),
-		sessionTTL:            time.Duration(envInt("SESSION_TTL_HOURS", 168)) * time.Hour,
-		accountHealthInterval: 15 * time.Minute,
-		rateLimitBuckets:      map[string]int{},
-		idempotencyCache:      map[string]CachedResponse{},
-		authStates:            map[string]time.Time{},
-		sessions:              map[string]Session{},
-		openAIOAuthFlows:      map[string]openAIOAuthFlow{},
-		requestAccounts:       map[string]string{},
-		keyRotationOffsets:    map[string]int{},
+		state:                  defaultState(),
+		dataFile:               dataFile,
+		databaseURL:            env("DATABASE_URL", ""),
+		staticDir:              env("STATIC_DIR", "dist"),
+		persistence:            persistence,
+		corsOrigin:             normalizeCORSOriginConfig(env("CORS_ORIGIN", "*")),
+		adminToken:             env("ADMIN_TOKEN", ""),
+		secretKey:              deriveSecretKey(env("SECRET_KEY", "")),
+		requestLimitPerMinute:  envInt("REQUEST_LIMIT_PER_MINUTE", 60),
+		providerMode:           env("PROVIDER_MODE", "mock"),
+		upstreamAPIKey:         env("UPSTREAM_API_KEY", ""),
+		upstreamTimeout:        time.Duration(envInt("UPSTREAM_TIMEOUT_SECONDS", defaultUpstreamTimeoutSeconds)) * time.Second,
+		httpClient:             &http.Client{Timeout: time.Duration(envInt("UPSTREAM_TIMEOUT_SECONDS", defaultUpstreamTimeoutSeconds)) * time.Second},
+		chatGPTAPIBase:         env("CHATGPT_API_BASE", defaultChatGPTAPIBaseURL),
+		openAIAuthBase:         env("OPENAI_AUTH_BASE", "https://auth.openai.com"),
+		discordClientID:        env("DISCORD_CLIENT_ID", ""),
+		discordClientSecret:    env("DISCORD_CLIENT_SECRET", ""),
+		discordRedirectURI:     env("DISCORD_REDIRECT_URI", ""),
+		discordAllowedGuildID:  env("DISCORD_ALLOWED_GUILD_ID", ""),
+		discordAllowedRoleID:   env("DISCORD_ALLOWED_ROLE_ID", ""),
+		discordBlockedGuildIDs: parseGuildIDList(env("DISCORD_BLOCKED_GUILD_IDS", "")),
+		discordOAuthBase:       env("DISCORD_OAUTH_BASE", "https://discord.com/api/oauth2"),
+		discordAPIBase:         env("DISCORD_API_BASE", "https://discord.com/api/v10"),
+		authSuccessURL:         env("AUTH_SUCCESS_URL", ""),
+		sessionTTL:             time.Duration(envInt("SESSION_TTL_HOURS", 168)) * time.Hour,
+		accountHealthInterval:  15 * time.Minute,
+		rateLimitBuckets:       map[string]int{},
+		idempotencyCache:       map[string]CachedResponse{},
+		authStates:             map[string]time.Time{},
+		sessions:               map[string]Session{},
+		openAIOAuthFlows:       map[string]openAIOAuthFlow{},
+		requestAccounts:        map[string]string{},
+		keyRotationOffsets:     map[string]int{},
 	}
 	s.webHTTPClient = newChatGPTWebHTTPClient(s.upstreamTimeout)
 	s.initStorage()
@@ -925,6 +937,7 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	admin.PATCH("/channels/:id", s.updateChannel)
 	admin.DELETE("/channels/:id", s.deleteChannel)
 	admin.POST("/channels/:id/check", s.checkChannel)
+	admin.POST("/channels/:id/upstream-models", s.previewUpstreamModels)
 	admin.POST("/channels/:id/sync-models", s.syncChannelModels)
 	admin.GET("/models", s.listModels)
 	admin.POST("/models", s.createModel)
@@ -1113,6 +1126,7 @@ func (s *Server) configStatus(c *gin.Context) {
 	discordEnabled := s.discordLoginEnabledLocked()
 	discordGuildGate := s.discordAllowedGuildID != ""
 	discordRoleGate := s.discordAllowedRoleID != ""
+	discordBlockedGuildGate := len(s.discordBlockedGuildIDs) > 0
 	s.mu.Unlock()
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1129,6 +1143,7 @@ func (s *Server) configStatus(c *gin.Context) {
 		"discordLoginEnabled":     discordEnabled,
 		"discordGuildGate":        discordGuildGate,
 		"discordRoleGate":         discordRoleGate,
+		"discordBlockedGuildGate": discordBlockedGuildGate,
 		"corsOrigin":              s.corsOrigin,
 		"adminAuthEnabled":        s.adminToken != "",
 		"requestLimitPerMinute":   s.requestLimitPerMinute,
@@ -1628,15 +1643,16 @@ func (s *Server) getDiscordSettings(c *gin.Context) {
 
 func (s *Server) updateDiscordSettings(c *gin.Context) {
 	var body struct {
-		Enabled           bool   `json:"enabled"`
-		ClientID          string `json:"clientId"`
-		ClientSecret      string `json:"clientSecret"`
-		ClearClientSecret bool   `json:"clearClientSecret"`
-		RedirectURI       string `json:"redirectUri"`
-		AllowedGuildID    string `json:"allowedGuildId"`
-		AllowedRoleID     string `json:"allowedRoleId"`
-		AuthSuccessURL    string `json:"authSuccessUrl"`
-		SessionTTLHours   int    `json:"sessionTtlHours"`
+		Enabled           bool     `json:"enabled"`
+		ClientID          string   `json:"clientId"`
+		ClientSecret      string   `json:"clientSecret"`
+		ClearClientSecret bool     `json:"clearClientSecret"`
+		RedirectURI       string   `json:"redirectUri"`
+		AllowedGuildID    string   `json:"allowedGuildId"`
+		AllowedRoleID     string   `json:"allowedRoleId"`
+		BlockedGuildIDs   []string `json:"blockedGuildIds"`
+		AuthSuccessURL    string   `json:"authSuccessUrl"`
+		SessionTTLHours   int      `json:"sessionTtlHours"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		s.openAIError(c, http.StatusBadRequest, "invalid_json", "Invalid JSON body", "invalid_request_error", nil)
@@ -1676,6 +1692,11 @@ func (s *Server) updateDiscordSettings(c *gin.Context) {
 	}
 	if body.AllowedRoleID != "" && !digitsOnly(body.AllowedRoleID) {
 		validationError(c, "Discord 身份组 ID 只能包含数字")
+		return
+	}
+	blockedGuildIDs, invalidBlocked := sanitizeGuildIDList(body.BlockedGuildIDs)
+	if invalidBlocked != "" {
+		validationError(c, "拉黑服务器 ID 只能包含数字")
 		return
 	}
 	if body.RedirectURI != "" && !validHTTPURL(body.RedirectURI) {
@@ -1733,6 +1754,7 @@ func (s *Server) updateDiscordSettings(c *gin.Context) {
 		RedirectURI:     body.RedirectURI,
 		AllowedGuildID:  body.AllowedGuildID,
 		AllowedRoleID:   body.AllowedRoleID,
+		BlockedGuildIDs: blockedGuildIDs,
 		AuthSuccessURL:  body.AuthSuccessURL,
 		SessionTTLHours: body.SessionTTLHours,
 	}
@@ -1741,6 +1763,7 @@ func (s *Server) updateDiscordSettings(c *gin.Context) {
 	s.discordRedirectURI = body.RedirectURI
 	s.discordAllowedGuildID = body.AllowedGuildID
 	s.discordAllowedRoleID = body.AllowedRoleID
+	s.discordBlockedGuildIDs = blockedGuildIDs
 	s.authSuccessURL = body.AuthSuccessURL
 	s.sessionTTL = time.Duration(body.SessionTTLHours) * time.Hour
 	if !body.Enabled {
@@ -1770,6 +1793,7 @@ func (s *Server) publicDiscordSettingsLocked(origin string) PublicDiscordSetting
 			RedirectURI:     redirectURI,
 			AllowedGuildID:  s.discordAllowedGuildID,
 			AllowedRoleID:   s.discordAllowedRoleID,
+			BlockedGuildIDs: append([]string{}, s.discordBlockedGuildIDs...),
 			AuthSuccessURL:  authSuccessURL,
 			SessionTTLHours: int(s.sessionTTL.Hours()),
 		}
@@ -1789,6 +1813,7 @@ func (s *Server) publicDiscordSettingsLocked(origin string) PublicDiscordSetting
 		RedirectURI:     redirectURI,
 		AllowedGuildID:  settings.AllowedGuildID,
 		AllowedRoleID:   settings.AllowedRoleID,
+		BlockedGuildIDs: append([]string{}, settings.BlockedGuildIDs...),
 		AuthSuccessURL:  authSuccessURL,
 		SessionTTLHours: settings.SessionTTLHours,
 	}
@@ -1814,7 +1839,13 @@ func (s *Server) discordStart(c *gin.Context) {
 	values.Set("client_id", config.ClientID)
 	values.Set("redirect_uri", config.RedirectURI)
 	values.Set("response_type", "code")
-	values.Set("scope", "identify guilds.members.read")
+	// The "guilds" scope is only needed to read the user's guild list for the
+	// blocked-server check, so request it only when a blacklist is configured.
+	scope := "identify guilds.members.read"
+	if len(config.BlockedGuildIDs) > 0 {
+		scope += " guilds"
+	}
+	values.Set("scope", scope)
 	values.Set("state", state)
 	c.Redirect(http.StatusFound, strings.TrimRight(config.OAuthBase, "/")+"/authorize?"+values.Encode())
 }
@@ -1845,6 +1876,21 @@ func (s *Server) discordCallback(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
 		return
+	}
+
+	// Enforce the blocked-server list before any login or registration: a user
+	// who belongs to any blacklisted guild is denied outright, even if already
+	// bound to a local account.
+	if len(config.BlockedGuildIDs) > 0 {
+		guilds, err := s.fetchDiscordUserGuilds(token.AccessToken)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
+			return
+		}
+		if firstBlockedGuild(guilds, config.BlockedGuildIDs) != "" {
+			c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"message": "你所在的 Discord 服务器已被限制登录"}})
+			return
+		}
 	}
 
 	s.mu.Lock()
@@ -3498,6 +3544,14 @@ func (s *Server) deleteChannel(c *gin.Context) {
 }
 
 func (s *Server) syncChannelModels(c *gin.Context) {
+	// An optional models list lets the admin commit an explicit selection (from
+	// the model picker) instead of importing every model the upstream returns.
+	var body struct {
+		Models []string `json:"models"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	selected := mergeStrings(nil, body.Models)
+
 	s.mu.Lock()
 	channel := s.findChannel(c.Param("id"))
 	if channel == nil {
@@ -3507,7 +3561,7 @@ func (s *Server) syncChannelModels(c *gin.Context) {
 	}
 	channelCopy := *channel
 	upstreamKey := ""
-	if !isCodexChannel(channelCopy) {
+	if len(selected) == 0 && !isCodexChannel(channelCopy) {
 		var err error
 		upstreamKey, err = s.channelUpstreamKey(channelCopy)
 		if err != nil {
@@ -3518,14 +3572,18 @@ func (s *Server) syncChannelModels(c *gin.Context) {
 	}
 	s.mu.Unlock()
 
-	modelIDs, err := s.fetchUpstreamModelIDs(channelCopy, upstreamKey)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
-		return
-	}
+	modelIDs := selected
 	if len(modelIDs) == 0 {
-		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": "上游未返回可用模型"}})
-		return
+		var err error
+		modelIDs, err = s.fetchUpstreamModelIDs(channelCopy, upstreamKey)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
+			return
+		}
+		if len(modelIDs) == 0 {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": "上游未返回可用模型"}})
+			return
+		}
 	}
 
 	s.mu.Lock()
@@ -3571,6 +3629,35 @@ func (s *Server) syncChannelModels(c *gin.Context) {
 	removedModels := s.pruneUnreferencedImportedModelsLocked()
 	s.saveStateLocked()
 	c.JSON(http.StatusOK, gin.H{"channel": publicChannel(*channel), "models": channel.Models, "addedModels": added, "removedModels": removedModels})
+}
+
+func (s *Server) previewUpstreamModels(c *gin.Context) {
+	s.mu.Lock()
+	channel := s.findChannel(c.Param("id"))
+	if channel == nil {
+		s.mu.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "Channel not found"}})
+		return
+	}
+	channelCopy := *channel
+	upstreamKey := ""
+	if !isCodexChannel(channelCopy) {
+		var err error
+		upstreamKey, err = s.channelUpstreamKey(channelCopy)
+		if err != nil {
+			s.mu.Unlock()
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
+			return
+		}
+	}
+	s.mu.Unlock()
+
+	modelIDs, err := s.fetchUpstreamModelIDs(channelCopy, upstreamKey)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"models": modelIDs})
 }
 
 func (s *Server) checkChannel(c *gin.Context) {
@@ -7889,14 +7976,15 @@ func (s *Server) discordRuntimeConfig(c *gin.Context) DiscordRuntimeConfig {
 		authSuccessURL = requestOrigin(c) + "/"
 	}
 	return DiscordRuntimeConfig{
-		ClientID:       s.discordClientID,
-		ClientSecret:   s.discordClientSecret,
-		RedirectURI:    redirectURI,
-		AllowedGuildID: s.discordAllowedGuildID,
-		AllowedRoleID:  s.discordAllowedRoleID,
-		OAuthBase:      s.discordOAuthBase,
-		AuthSuccessURL: authSuccessURL,
-		SessionTTL:     s.sessionTTL,
+		ClientID:        s.discordClientID,
+		ClientSecret:    s.discordClientSecret,
+		RedirectURI:     redirectURI,
+		AllowedGuildID:  s.discordAllowedGuildID,
+		AllowedRoleID:   s.discordAllowedRoleID,
+		BlockedGuildIDs: append([]string(nil), s.discordBlockedGuildIDs...),
+		OAuthBase:       s.discordOAuthBase,
+		AuthSuccessURL:  authSuccessURL,
+		SessionTTL:      s.sessionTTL,
 	}
 }
 
@@ -7962,6 +8050,14 @@ func (s *Server) fetchDiscordGuildMember(accessToken string, guildID string) (*D
 		return nil, err
 	}
 	return &member, nil
+}
+
+func (s *Server) fetchDiscordUserGuilds(accessToken string) ([]DiscordUserGuild, error) {
+	var guilds []DiscordUserGuild
+	if err := s.discordGet(accessToken, "/users/@me/guilds", &guilds); err != nil {
+		return nil, err
+	}
+	return guilds, nil
 }
 
 func (s *Server) discordGet(accessToken string, path string, target interface{}) error {
@@ -8765,6 +8861,65 @@ func digitsOnly(value string) bool {
 	return true
 }
 
+// parseGuildIDList splits a comma/space/newline separated list of Discord guild
+// IDs, keeping only digit-only values and dropping blanks and duplicates.
+func parseGuildIDList(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\n' || r == '\r' || r == '\t'
+	})
+	seen := map[string]bool{}
+	ids := []string{}
+	for _, field := range fields {
+		id := strings.TrimSpace(field)
+		if id == "" || !digitsOnly(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// sanitizeGuildIDList validates and de-duplicates an incoming ID list. It returns
+// the cleaned list and the first invalid (non-digit) value found, if any.
+func sanitizeGuildIDList(values []string) ([]string, string) {
+	seen := map[string]bool{}
+	ids := []string{}
+	for _, value := range values {
+		id := strings.TrimSpace(value)
+		if id == "" {
+			continue
+		}
+		if !digitsOnly(id) {
+			return nil, id
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids, ""
+}
+
+// firstBlockedGuild returns the ID of the first guild the user belongs to that
+// appears in the blocked list, or "" when none match.
+func firstBlockedGuild(guilds []DiscordUserGuild, blocked []string) string {
+	if len(blocked) == 0 {
+		return ""
+	}
+	blockedSet := map[string]bool{}
+	for _, id := range blocked {
+		blockedSet[id] = true
+	}
+	for _, guild := range guilds {
+		if blockedSet[guild.ID] {
+			return guild.ID
+		}
+	}
+	return ""
+}
+
 func validHTTPURL(value string) bool {
 	parsed, err := url.Parse(value)
 	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
@@ -9548,6 +9703,7 @@ func (s *Server) applyPersistedDiscordSettings() {
 	s.discordRedirectURI = settings.RedirectURI
 	s.discordAllowedGuildID = settings.AllowedGuildID
 	s.discordAllowedRoleID = settings.AllowedRoleID
+	s.discordBlockedGuildIDs = append([]string{}, settings.BlockedGuildIDs...)
 	s.authSuccessURL = settings.AuthSuccessURL
 	if settings.SessionTTLHours > 0 {
 		s.sessionTTL = time.Duration(settings.SessionTTLHours) * time.Hour

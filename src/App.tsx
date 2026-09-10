@@ -240,6 +240,7 @@ type DiscordSettings = {
   redirectUri: string;
   allowedGuildId: string;
   allowedRoleId: string;
+  blockedGuildIds: string[];
   authSuccessUrl: string;
   sessionTtlHours: number;
 };
@@ -772,6 +773,7 @@ function withBrowserDiscordDefaults(settings: DiscordSettings): DiscordSettings 
     ...settings,
     redirectUri: settings.redirectUri && !settings.redirectUri.includes("localhost") ? settings.redirectUri : defaultDiscordRedirectUri(),
     authSuccessUrl: settings.authSuccessUrl && !settings.authSuccessUrl.includes("localhost") ? settings.authSuccessUrl : defaultAuthSuccessUrl(),
+    blockedGuildIds: arrayOf(settings.blockedGuildIds),
     sessionTtlHours: settings.sessionTtlHours || 168
   };
 }
@@ -937,10 +939,11 @@ function App() {
     window.setTimeout(() => setToast(""), 1800);
   }
 
-  async function syncChannelModels(id: string) {
+  async function syncChannelModels(id: string, models?: string[]) {
+    const explicit = arrayOf(models).map((model) => model.trim()).filter(Boolean);
     const data = await fetchJson<ChannelSyncResult>(`/api/channels/${id}/sync-models`, {
       method: "POST",
-      body: JSON.stringify({})
+      body: JSON.stringify(explicit.length ? { models: explicit } : {})
     });
     const syncedChannel = normalizeChannel(data.channel);
     const addedModels = arrayOf(data.addedModels).map(normalizeModel);
@@ -953,7 +956,7 @@ function App() {
       });
     }
     removeModelsFromCatalog(data.removedModels);
-    setToast(syncedModels.length ? `已拉取 ${syncedModels.length} 个模型` : "上游没有返回模型");
+    setToast(explicit.length ? `已保存 ${syncedModels.length} 个模型` : syncedModels.length ? `已拉取 ${syncedModels.length} 个模型` : "上游没有返回模型");
     window.setTimeout(() => setToast(""), 2200);
   }
 
@@ -1677,8 +1680,12 @@ function AccountHome({
           {message && <p className="account-message">{message}</p>}
           <div className="account-key-list">
             {data?.apiKeys?.map((key) => (
-              <div key={key.id}>
-                <span><strong>{key.name}</strong><small>{key.prefix}...</small></span>
+              <div key={key.id} className="account-key-item">
+                <span className="account-key-mark" aria-hidden="true"><Icon name="key" /></span>
+                <div className="account-key-info">
+                  <strong>{key.name}</strong>
+                  <code>{key.prefix}…</code>
+                </div>
                 <Badge tone={key.status}>{statusLabel(key.status)}</Badge>
               </div>
             ))}
@@ -3252,7 +3259,7 @@ function ChannelsView({
   onCreate: (channel: ChannelCreate) => Promise<void>;
   onImport: (channelId: string, file: File) => Promise<void>;
   onDelete: (id: string) => void;
-  onSyncModels: (id: string) => Promise<void>;
+  onSyncModels: (id: string, models?: string[]) => Promise<void>;
   onCheck: (id: string) => Promise<void>;
 }) {
   const initialTemplate = channelTemplateFor("openai");
@@ -3385,7 +3392,7 @@ function ChannelEditor({
   onUpdate: (id: string, patch: ChannelPatch) => Promise<void>;
   onImport: (channelId: string, file: File) => Promise<void>;
   onDelete: (id: string) => void;
-  onSyncModels: (id: string) => Promise<void>;
+  onSyncModels: (id: string, models?: string[]) => Promise<void>;
   onCheck: (id: string) => Promise<void>;
 }) {
   const [name, setName] = useState(channel.name);
@@ -3399,6 +3406,7 @@ function ChannelEditor({
   const [webEndpoint, setWebEndpoint] = useState(Boolean(channel.webEndpoint));
   const [upstreamApiKey, setUpstreamApiKey] = useState("");
   const [busy, setBusy] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
   const accountCount = channel.openaiAccountCount ?? channel.openaiAccounts?.length ?? 0;
   const modelCount = arrayOf(channel.models).length;
   const capabilities = channelCapabilities(channel);
@@ -3474,12 +3482,13 @@ function ChannelEditor({
     }
   }
 
-  async function syncModels() {
+  async function openModelPicker() {
     setBusy("sync");
     try {
-      await save();
-      await onSyncModels(channel.id);
-      setModelSource("synced");
+      // Persist any edits (Base URL / key) so the preview queries the live upstream.
+      await onUpdate(channel.id, currentChannelPatch());
+      setUpstreamApiKey("");
+      setPickerOpen(true);
     } finally {
       setBusy("");
     }
@@ -3514,6 +3523,7 @@ function ChannelEditor({
   }
 
   return (
+    <>
     <details className="channel-card channel-card-collapsible">
       <summary className="channel-card-head channel-list-row">
         <div className="channel-identity">
@@ -3631,7 +3641,7 @@ function ChannelEditor({
             <button type="button" className="secondary-button compact-button" onClick={fillTemplateModels} disabled={busy !== ""}>
               填入模板
             </button>
-            <button type="button" className="secondary-button compact-button" onClick={syncModels} disabled={busy !== ""}>
+            <button type="button" className="secondary-button compact-button" onClick={openModelPicker} disabled={busy !== ""}>
               {busy === "sync" ? "拉取中" : "获取上游模型"}
             </button>
           </div>
@@ -3675,6 +3685,174 @@ function ChannelEditor({
         </details>
       </div>
     </details>
+    {pickerOpen && (
+      <ModelPickerModal
+        channelId={channel.id}
+        channelName={channel.name}
+        current={models.split(",").map((model) => model.trim()).filter(Boolean)}
+        onConfirm={async (selectedModels) => { await onSyncModels(channel.id, selectedModels); }}
+        onClose={() => setPickerOpen(false)}
+      />
+    )}
+    </>
+  );
+}
+
+function ModelPickerModal({
+  channelId,
+  channelName,
+  current,
+  onConfirm,
+  onClose
+}: {
+  channelId: string;
+  channelName: string;
+  current: string[];
+  onConfirm: (models: string[]) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [upstream, setUpstream] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const data = await fetchJson<{ models?: string[] }>(`/api/channels/${channelId}/upstream-models`, {
+          method: "POST",
+          body: JSON.stringify({})
+        });
+        if (cancelled) return;
+        const seen = new Set<string>();
+        const unique = arrayOf(data.models).map((model) => model.trim()).filter((model) => {
+          if (!model) return false;
+          const key = model.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const currentLower = new Set(current.map((model) => model.toLowerCase()));
+        setUpstream(unique);
+        setSelected(new Set(unique.filter((model) => currentLower.has(model.toLowerCase()))));
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "获取上游模型失败");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Fetch once per open; `current` is only used to seed the initial checkboxes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery ? upstream.filter((model) => model.toLowerCase().includes(normalizedQuery)) : upstream;
+  const allVisibleSelected = filtered.length > 0 && filtered.every((model) => selected.has(model));
+
+  function toggle(model: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(model)) next.delete(model);
+      else next.add(model);
+      return next;
+    });
+  }
+
+  function toggleAllVisible() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) filtered.forEach((model) => next.delete(model));
+      else filtered.forEach((model) => next.add(model));
+      return next;
+    });
+  }
+
+  async function confirm() {
+    // Final list = the picked upstream models plus any existing custom models the
+    // upstream does not expose, so manually added entries are never dropped.
+    const upstreamLower = new Set(upstream.map((model) => model.toLowerCase()));
+    const preserved = current.filter((model) => !upstreamLower.has(model.toLowerCase()));
+    const picked = upstream.filter((model) => selected.has(model));
+    const seen = new Set<string>();
+    const finalList = [...preserved, ...picked].filter((model) => {
+      const key = model.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    setSaving(true);
+    try {
+      await onConfirm(finalList);
+      onClose();
+    } catch {
+      // onConfirm surfaces its own toast on failure; keep the picker open to retry.
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card model-picker-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <strong>选择上游模型</strong>
+            <span>{channelName} · 勾选需要接入的模型</span>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose}>×</button>
+        </div>
+        {loading ? (
+          <div className="model-picker-status">正在获取上游模型…</div>
+        ) : error ? (
+          <div className="model-picker-status model-picker-error">{error}</div>
+        ) : (
+          <>
+            <div className="model-picker-toolbar">
+              <input
+                className="model-picker-search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索模型名称"
+                autoFocus
+              />
+              <button type="button" className="secondary-button compact-button" onClick={toggleAllVisible} disabled={filtered.length === 0}>
+                {allVisibleSelected ? "取消全选" : "全选"}
+              </button>
+            </div>
+            <div className="model-picker-count">
+              共 {upstream.length} 个 · 已选 {selected.size} 个{normalizedQuery ? ` · 匹配 ${filtered.length} 个` : ""}
+            </div>
+            <div className="model-picker-list">
+              {filtered.map((model) => {
+                const checked = selected.has(model);
+                const already = current.some((item) => item.toLowerCase() === model.toLowerCase());
+                return (
+                  <label key={model} className={`model-picker-row${checked ? " checked" : ""}`}>
+                    <input type="checkbox" checked={checked} onChange={() => toggle(model)} />
+                    <span className="model-picker-name">{model}</span>
+                    {already && <span className="model-picker-tag">已接入</span>}
+                  </label>
+                );
+              })}
+              {filtered.length === 0 && <div className="model-picker-status">没有匹配的模型</div>}
+            </div>
+          </>
+        )}
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>取消</button>
+          <button type="button" className="primary-button" disabled={loading || Boolean(error) || saving} onClick={confirm}>
+            {saving ? "保存中" : `导入所选 (${selected.size})`}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3895,6 +4073,7 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  const [blockedGuildText, setBlockedGuildText] = useState("");
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [settingsTab, setSettingsTab] = useState("system");
@@ -3923,6 +4102,7 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
     ])
       .then(([discordData, authData, checkInData, accountData, maintenanceData, healthData]) => {
         setDiscord(withBrowserDiscordDefaults(discordData.discord));
+        setBlockedGuildText(arrayOf(discordData.discord.blockedGuildIds).join("\n"));
         setRegistrationEnabled(authData.auth.registrationEnabled);
         setRegistrationMode(normalizeRegistrationMode(authData.auth.registrationMode));
         setDefaultBalance(String(authData.auth.defaultBalance || 0));
@@ -3982,11 +4162,13 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
     setMessage("");
     try {
       const nextDiscord = withBrowserDiscordDefaults(discord);
+      const blockedGuildIds = blockedGuildText.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean);
       const data = await fetchJson<{ discord: DiscordSettings }>("/api/settings/discord", {
         method: "PATCH",
-        body: JSON.stringify({ ...nextDiscord, clientSecret })
+        body: JSON.stringify({ ...nextDiscord, blockedGuildIds, clientSecret })
       });
       setDiscord(withBrowserDiscordDefaults(data.discord));
+      setBlockedGuildText(arrayOf(data.discord.blockedGuildIds).join("\n"));
       setClientSecret("");
       setMessage("Discord 配置已保存");
     } catch (error) {
@@ -4538,6 +4720,16 @@ response = client.chat.completions.create(
                   onChange={(event) => setDiscord({ ...discord, allowedRoleId: event.target.value })}
                   placeholder="允许登录的身份组 ID"
                 />
+              </label>
+              <label className="settings-form-wide">
+                <span>拉黑服务器 ID</span>
+                <textarea
+                  value={blockedGuildText}
+                  onChange={(event) => setBlockedGuildText(event.target.value)}
+                  placeholder="每行一个服务器 ID；命中的用户禁止注册 / 登录"
+                  rows={3}
+                />
+                <small>用户若加入了这些 Discord 服务器中的任意一个，将无法注册或登录（优先于上面的允许规则）。</small>
               </label>
               <label className="settings-form-wide">
                 <span>登录成功跳转地址</span>
