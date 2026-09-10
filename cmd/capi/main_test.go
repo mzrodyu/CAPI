@@ -4706,3 +4706,141 @@ func TestParseWhamUsageQuotaLimitsFreePlanUsesMonthlyWindow(t *testing.T) {
 		t.Fatalf("paid plan primary window label = %#v, want 5h first", paid)
 	}
 }
+
+func TestChannelAllowedGroupIDsRestrictChatRouting(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, router := testServerRouter(t)
+	seedGatewayFixtures(server)
+
+	created := perform(router, http.MethodPost, "/api/groups", `{"name":"premium","description":"尊享"}`, nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create group status = %d body = %s", created.Code, created.Body.String())
+	}
+	var groupPayload struct {
+		Group UserGroup `json:"group"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &groupPayload); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	groupID := groupPayload.Group.ID
+
+	// Restrict the deepseek-v4 channel (chn_1002) to the premium group.
+	restricted := perform(router, http.MethodPatch, "/api/channels/chn_1002", `{"allowedGroupIds":["`+groupID+`"]}`, nil)
+	if restricted.Code != http.StatusOK {
+		t.Fatalf("restrict channel status = %d body = %s", restricted.Code, restricted.Body.String())
+	}
+	if !bytes.Contains(restricted.Body.Bytes(), []byte(`"allowedGroupIds":["`+groupID+`"]`)) {
+		t.Fatalf("restricted channel did not persist allowed group ids: %s", restricted.Body.String())
+	}
+
+	// usr_1002 is ungrouped, so deepseek-v4 (only on the restricted channel) is unavailable.
+	blocked := perform(router, http.MethodPost, "/v1/chat/completions", `{"model":"ds","messages":[{"role":"user","content":"hi"}]}`, map[string]string{"Authorization": "Bearer cat_fixture_live_secret"})
+	if blocked.Code != http.StatusBadRequest || !bytes.Contains(blocked.Body.Bytes(), []byte(`model_not_available`)) {
+		t.Fatalf("ungrouped user should be blocked from restricted channel: %d %s", blocked.Code, blocked.Body.String())
+	}
+
+	// Move usr_1002 into the premium group, then deepseek-v4 becomes routable.
+	server.mu.Lock()
+	server.findUser("usr_1002").GroupID = groupID
+	server.mu.Unlock()
+	allowed := perform(router, http.MethodPost, "/v1/chat/completions", `{"model":"ds","messages":[{"role":"user","content":"hi"}]}`, map[string]string{"Authorization": "Bearer cat_fixture_live_secret"})
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("grouped user should reach restricted channel: %d %s", allowed.Code, allowed.Body.String())
+	}
+}
+
+func TestUserGroupCanBeAssignedAndUnassigned(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, router := testServerRouter(t)
+	seedGatewayFixtures(server)
+
+	created := perform(router, http.MethodPost, "/api/groups", `{"name":"beta","description":"内测"}`, nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create group status = %d body = %s", created.Code, created.Body.String())
+	}
+	var groupPayload struct {
+		Group UserGroup `json:"group"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &groupPayload); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	groupID := groupPayload.Group.ID
+
+	// Assigning a non-existent group is rejected.
+	invalid := perform(router, http.MethodPatch, "/api/users/usr_1002", `{"groupId":"grp_missing"}`, nil)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("unknown group assignment should be rejected: %d %s", invalid.Code, invalid.Body.String())
+	}
+
+	// Assigning a valid group persists the groupId.
+	assigned := perform(router, http.MethodPatch, "/api/users/usr_1002", `{"groupId":"`+groupID+`"}`, nil)
+	if assigned.Code != http.StatusOK || !bytes.Contains(assigned.Body.Bytes(), []byte(`"groupId":"`+groupID+`"`)) {
+		t.Fatalf("valid group assignment status = %d body = %s", assigned.Code, assigned.Body.String())
+	}
+
+	// Unassigning (empty string) clears the group.
+	unassigned := perform(router, http.MethodPatch, "/api/users/usr_1002", `{"groupId":""}`, nil)
+	if unassigned.Code != http.StatusOK || !bytes.Contains(unassigned.Body.Bytes(), []byte(`"groupId":""`)) {
+		t.Fatalf("unassign status = %d body = %s", unassigned.Code, unassigned.Body.String())
+	}
+}
+
+
+func TestOwnAPIKeyCanBeDeletedByOwner(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	_, router := testServerRouter(t)
+
+	setup := perform(router, http.MethodPost, "/api/auth/setup", `{
+		"username":"root_admin",
+		"password":"correct-horse-battery",
+		"displayName":"Root Admin",
+		"email":"root@example.test",
+		"registrationEnabled":true,
+		"registrationMode":"username"
+	}`, nil)
+	if setup.Code != http.StatusCreated {
+		t.Fatalf("setup status = %d body = %s", setup.Code, setup.Body.String())
+	}
+
+	register := perform(router, http.MethodPost, "/api/auth/register", `{
+		"username":"self_delete",
+		"password":"safe-password-123",
+		"displayName":"Self Delete",
+		"email":"self-delete@example.test"
+	}`, nil)
+	if register.Code != http.StatusCreated {
+		t.Fatalf("register status = %d body = %s", register.Code, register.Body.String())
+	}
+	userCookie := register.Result().Cookies()[0]
+	headers := map[string]string{"Cookie": userCookie.Name + "=" + userCookie.Value}
+
+	created := perform(router, http.MethodPost, "/api/account/api-keys", `{"name":"Temp Key"}`, headers)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create own key status = %d body = %s", created.Code, created.Body.String())
+	}
+	var payload struct {
+		Secret string       `json:"secret"`
+		APIKey PublicAPIKey `json:"apiKey"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode own key: %v", err)
+	}
+	keyID := payload.APIKey.ID
+	if keyID == "" {
+		t.Fatalf("created own key did not include an id: %s", created.Body.String())
+	}
+
+	// The key works while active (needs a model/channel, so seed fixtures first).
+	// The owner deletes it.
+	deleted := perform(router, http.MethodDelete, "/api/account/api-keys/"+keyID, "", headers)
+	if deleted.Code != http.StatusOK || !bytes.Contains(deleted.Body.Bytes(), []byte(`"deleted":true`)) {
+		t.Fatalf("delete own key status = %d body = %s", deleted.Code, deleted.Body.String())
+	}
+
+	// The key is gone: a repeat delete reports not found.
+	repeat := perform(router, http.MethodDelete, "/api/account/api-keys/"+keyID, "", headers)
+	if repeat.Code != http.StatusNotFound {
+		t.Fatalf("repeat delete status = %d body = %s", repeat.Code, repeat.Body.String())
+	}
+}
+

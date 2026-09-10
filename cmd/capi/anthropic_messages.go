@@ -104,7 +104,7 @@ func (s *Server) anthropicMessages(c *gin.Context) {
 		writeAnthropicError(c, http.StatusForbidden, "permission_error", "API key is not allowed to use model: "+model.ID)
 		return
 	}
-	channels := s.channelCandidatesLocked(model.ID)
+	channels := s.channelCandidatesLocked(model.ID, auth.User.GroupID)
 	if len(channels) == 0 {
 		s.logGatewayFailureLocked(c, "model_not_available", auth.User.ID, auth.Key.Prefix, model.ID, "")
 		s.mu.Unlock()

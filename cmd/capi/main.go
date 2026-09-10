@@ -69,6 +69,7 @@ var imageJSONKeepaliveInterval = 8 * time.Second
 
 type AppState struct {
 	Users       []User          `json:"users"`
+	Groups      []UserGroup     `json:"groups"`
 	APIKeys     []APIKey        `json:"apiKeys"`
 	Channels    []Channel       `json:"channels"`
 	Models      []Model         `json:"models"`
@@ -98,6 +99,7 @@ type AuthSettings struct {
 	RegistrationEnabled bool    `json:"registrationEnabled"`
 	RegistrationMode    string  `json:"registrationMode,omitempty"`
 	DefaultBalance      float64 `json:"defaultBalance"`
+	DefaultGroupID      string  `json:"defaultGroupId,omitempty"`
 }
 
 type CheckInSettings struct {
@@ -145,12 +147,20 @@ type PublicDiscordSettings struct {
 	SessionTTLHours int      `json:"sessionTtlHours"`
 }
 
+type UserGroup struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	CreatedAt   string `json:"createdAt"`
+}
+
 type User struct {
 	ID            string  `json:"id"`
 	Name          string  `json:"name"`
 	Email         string  `json:"email"`
 	Role          string  `json:"role"`
 	Status        string  `json:"status"`
+	GroupID       string  `json:"groupId"`
 	Balance       float64 `json:"balance"`
 	RequestsToday int     `json:"requestsToday"`
 	TotalRequests int     `json:"totalRequests"`
@@ -201,6 +211,7 @@ type Channel struct {
 	Priority          int             `json:"priority"`
 	Weight            int             `json:"weight"`
 	Models            []string        `json:"models"`
+	AllowedGroupIDs   []string        `json:"allowedGroupIds"`
 	InputPricePer1K   float64         `json:"inputPricePer1K"`
 	OutputPricePer1K  float64         `json:"outputPricePer1K"`
 	PricingConfigured bool            `json:"pricingConfigured"`
@@ -223,6 +234,7 @@ type PublicChannel struct {
 	Priority           int                   `json:"priority"`
 	Weight             int                   `json:"weight"`
 	Models             []string              `json:"models"`
+	AllowedGroupIDs    []string              `json:"allowedGroupIds"`
 	InputPricePer1K    float64               `json:"inputPricePer1K"`
 	OutputPricePer1K   float64               `json:"outputPricePer1K"`
 	PricingConfigured  bool                  `json:"pricingConfigured"`
@@ -914,6 +926,7 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	account.GET("/check-in", s.checkInStatus)
 	account.POST("/check-in", s.claimCheckIn)
 	account.POST("/api-keys", s.createOwnAPIKey)
+	account.DELETE("/api-keys/:id", s.deleteOwnAPIKey)
 	account.PATCH("/profile", s.updateAccountProfile)
 
 	admin := api.Group("")
@@ -926,6 +939,10 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	admin.POST("/users/:id/api-keys", s.createAPIKey)
 	admin.PATCH("/api-keys/:id", s.updateAPIKey)
 	admin.DELETE("/api-keys/:id", s.deleteAPIKey)
+	admin.GET("/groups", s.listUserGroups)
+	admin.POST("/groups", s.createUserGroup)
+	admin.PATCH("/groups/:id", s.updateUserGroup)
+	admin.DELETE("/groups/:id", s.deleteUserGroup)
 	admin.GET("/channels", s.listChannels)
 	admin.POST("/channels", s.createChannel)
 	admin.POST("/channel-model-preview", s.previewChannelModelsFromConnection)
@@ -1257,11 +1274,14 @@ func (s *Server) setupAdmin(c *gin.Context) {
 		LastLoginAt:   now(),
 	}
 	s.state.Accounts = append(s.state.Accounts, account)
+	defaultGroupID := s.ensureDefaultUserGroupLocked()
+	user.GroupID = defaultGroupID
 	s.state.Settings.Auth = AuthSettings{
 		Managed:             true,
 		RegistrationEnabled: body.RegistrationEnabled,
 		RegistrationMode:    registrationMode,
 		DefaultBalance:      defaultBalance,
+		DefaultGroupID:      defaultGroupID,
 	}
 	s.saveStateLocked()
 	s.mu.Unlock()
@@ -1392,6 +1412,7 @@ func (s *Server) registerAccount(c *gin.Context) {
 		Email:       body.Email,
 		Role:        "user",
 		Status:      "active",
+		GroupID:     s.defaultRegistrationGroupIDLocked(),
 		Balance:     s.defaultRegistrationBalanceLocked(),
 		CreatedAt:   now(),
 		LastLoginAt: now(),
@@ -1425,6 +1446,7 @@ func (s *Server) getAuthSettings(c *gin.Context) {
 		"registrationEnabled": s.registrationEnabledLocked(),
 		"registrationMode":    s.registrationModeLocked(),
 		"defaultBalance":      s.defaultRegistrationBalanceLocked(),
+		"defaultGroupId":      s.defaultRegistrationGroupIDLocked(),
 	}})
 }
 
@@ -1433,6 +1455,7 @@ func (s *Server) updateAuthSettings(c *gin.Context) {
 		RegistrationEnabled bool     `json:"registrationEnabled"`
 		RegistrationMode    *string  `json:"registrationMode"`
 		DefaultBalance      *float64 `json:"defaultBalance"`
+		DefaultGroupID      *string  `json:"defaultGroupId"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		validationError(c, "无效的认证设置")
@@ -1452,17 +1475,27 @@ func (s *Server) updateAuthSettings(c *gin.Context) {
 		}
 		defaultBalance = round4(*body.DefaultBalance)
 	}
+	defaultGroupID := s.defaultRegistrationGroupIDLocked()
+	if body.DefaultGroupID != nil {
+		defaultGroupID = strings.TrimSpace(*body.DefaultGroupID)
+		if s.findUserGroup(defaultGroupID) == nil {
+			validationError(c, "默认用户分组不存在")
+			return
+		}
+	}
 	s.state.Settings.Auth = AuthSettings{
 		Managed:             true,
 		RegistrationEnabled: body.RegistrationEnabled,
 		RegistrationMode:    registrationMode,
 		DefaultBalance:      defaultBalance,
+		DefaultGroupID:      defaultGroupID,
 	}
 	s.saveStateLocked()
 	c.JSON(http.StatusOK, gin.H{"auth": gin.H{
 		"registrationEnabled": body.RegistrationEnabled,
 		"registrationMode":    registrationMode,
 		"defaultBalance":      defaultBalance,
+		"defaultGroupId":      defaultGroupID,
 	}})
 }
 
@@ -1954,6 +1987,7 @@ func (s *Server) discordCallback(c *gin.Context) {
 			Name:        displayName,
 			Role:        "user",
 			Status:      "active",
+			GroupID:     s.defaultRegistrationGroupIDLocked(),
 			Balance:     s.defaultRegistrationBalanceLocked(),
 			CreatedAt:   now(),
 			LastLoginAt: now(),
@@ -2259,6 +2293,26 @@ func (s *Server) createOwnAPIKey(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"apiKey": publicAPIKey(key), "secret": secret})
 }
 
+func (s *Server) deleteOwnAPIKey(c *gin.Context) {
+	session, ok := s.sessionFromRequest(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "Login required"}})
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, key := range s.state.APIKeys {
+		if key.ID != c.Param("id") || key.UserID != session.UserID {
+			continue
+		}
+		s.state.APIKeys = append(s.state.APIKeys[:i], s.state.APIKeys[i+1:]...)
+		s.saveStateLocked()
+		c.JSON(http.StatusOK, gin.H{"deleted": true})
+		return
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "API key not found"}})
+}
+
 func (s *Server) overview(c *gin.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2397,6 +2451,16 @@ func (s *Server) updateUser(c *gin.Context) {
 	}
 	if value, ok := patch["note"].(string); ok {
 		user.Note = value
+	}
+	if value, ok := patch["groupId"].(string); ok {
+		value = strings.TrimSpace(value)
+		// An empty value clears the assignment so the user reverts to the
+		// unrestricted (未分组) set of channels.
+		if value != "" && s.findUserGroup(value) == nil {
+			validationError(c, "用户分组不存在")
+			return
+		}
+		user.GroupID = value
 	}
 	if value, ok := asFloat(patch["balance"]); ok {
 		if value < 0 {
@@ -2542,6 +2606,104 @@ func (s *Server) syncAccountAccessLocked(user *User) {
 			s.state.Accounts[i].Status = user.Status
 		}
 	}
+}
+
+func (s *Server) listUserGroups(c *gin.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c.JSON(http.StatusOK, gin.H{"groups": s.state.Groups})
+}
+
+func (s *Server) createUserGroup(c *gin.Context) {
+	var body struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		validationError(c, "无效的用户分组")
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	body.Description = strings.TrimSpace(body.Description)
+	if body.Name == "" {
+		validationError(c, "分组名称不能为空")
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, group := range s.state.Groups {
+		if strings.EqualFold(group.Name, body.Name) {
+			validationError(c, "分组名称已存在")
+			return
+		}
+	}
+	group := UserGroup{ID: newID("grp"), Name: body.Name, Description: body.Description, CreatedAt: now()}
+	s.state.Groups = append(s.state.Groups, group)
+	s.saveStateLocked()
+	c.JSON(http.StatusCreated, gin.H{"group": group})
+}
+
+func (s *Server) updateUserGroup(c *gin.Context) {
+	var patch map[string]interface{}
+	if err := c.ShouldBindJSON(&patch); err != nil {
+		validationError(c, "无效的用户分组")
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	group := s.findUserGroup(c.Param("id"))
+	if group == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "User group not found"}})
+		return
+	}
+	if value, ok := patch["name"].(string); ok {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			validationError(c, "分组名称不能为空")
+			return
+		}
+		for _, existing := range s.state.Groups {
+			if existing.ID != group.ID && strings.EqualFold(existing.Name, value) {
+				validationError(c, "分组名称已存在")
+				return
+			}
+		}
+		group.Name = value
+	}
+	if value, ok := patch["description"].(string); ok {
+		group.Description = strings.TrimSpace(value)
+	}
+	s.saveStateLocked()
+	c.JSON(http.StatusOK, gin.H{"group": group})
+}
+
+func (s *Server) deleteUserGroup(c *gin.Context) {
+	id := c.Param("id")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id == s.defaultRegistrationGroupIDLocked() {
+		validationError(c, "默认注册分组不能删除")
+		return
+	}
+	for _, user := range s.state.Users {
+		if user.GroupID == id {
+			validationError(c, "该分组仍有用户，不能删除")
+			return
+		}
+	}
+	for i, group := range s.state.Groups {
+		if group.ID != id {
+			continue
+		}
+		s.state.Groups = append(s.state.Groups[:i], s.state.Groups[i+1:]...)
+		for index := range s.state.Channels {
+			s.state.Channels[index].AllowedGroupIDs = removeString(s.state.Channels[index].AllowedGroupIDs, id)
+		}
+		s.saveStateLocked()
+		c.JSON(http.StatusOK, gin.H{"deleted": true})
+		return
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "User group not found"}})
 }
 
 func (s *Server) createAPIKey(c *gin.Context) {
@@ -2698,6 +2860,7 @@ func (s *Server) createChannel(c *gin.Context) {
 		Priority         int      `json:"priority"`
 		Weight           int      `json:"weight"`
 		Models           []string `json:"models"`
+		AllowedGroupIDs  []string `json:"allowedGroupIds"`
 		InputPricePer1K  float64  `json:"inputPricePer1K"`
 		OutputPricePer1K float64  `json:"outputPricePer1K"`
 	}
@@ -2746,6 +2909,14 @@ func (s *Server) createChannel(c *gin.Context) {
 		}
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	allowedGroupIDs, err := s.normalizeUserGroupIDsLocked(body.AllowedGroupIDs)
+	if err != nil {
+		validationError(c, err.Error())
+		return
+	}
+
 	channel := Channel{
 		ID:                newID("chn"),
 		Name:              body.Name,
@@ -2758,13 +2929,12 @@ func (s *Server) createChannel(c *gin.Context) {
 		Priority:          body.Priority,
 		Weight:            body.Weight,
 		Models:            append([]string{}, body.Models...),
+		AllowedGroupIDs:   allowedGroupIDs,
 		InputPricePer1K:   round4(body.InputPricePer1K),
 		OutputPricePer1K:  round4(body.OutputPricePer1K),
 		PricingConfigured: body.InputPricePer1K > 0 || body.OutputPricePer1K > 0,
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, modelID := range channel.Models {
 		s.ensureChannelModelLocked(modelID, channel.Provider, "渠道", "Imported channel model")
 	}
@@ -3494,6 +3664,19 @@ func (s *Server) updateChannel(c *gin.Context) {
 	if value, ok := patch["models"].([]interface{}); ok {
 		channel.Models = stringSlice(value)
 	}
+	if value, exists := patch["allowedGroupIds"]; exists {
+		allowedGroupIDs, ok := stringSliceFromPatch(value)
+		if !ok {
+			validationError(c, "allowedGroupIds must be an array")
+			return
+		}
+		normalized, err := s.normalizeUserGroupIDsLocked(allowedGroupIDs)
+		if err != nil {
+			validationError(c, err.Error())
+			return
+		}
+		channel.AllowedGroupIDs = normalized
+	}
 	for _, modelID := range channel.Models {
 		s.ensureChannelModelLocked(modelID, channel.Provider, "渠道", "Imported channel model")
 	}
@@ -4147,7 +4330,7 @@ func (s *Server) embeddings(c *gin.Context) {
 		s.mu.Unlock()
 		return
 	}
-	channels := s.channelCandidatesLocked(model.ID)
+	channels := s.channelCandidatesLocked(model.ID, auth.User.GroupID)
 	if len(channels) == 0 {
 		s.openAIErrorForCallLocked(c, http.StatusBadRequest, "model_not_available", "No available channel for model: "+model.ID, "invalid_request_error", stringPtr("model"), auth.User.ID, auth.Key.Prefix, model.ID, "")
 		s.mu.Unlock()
@@ -4218,7 +4401,7 @@ func (s *Server) audioSpeech(c *gin.Context) {
 		s.mu.Unlock()
 		return
 	}
-	channels := s.channelCandidatesLocked(model.ID)
+	channels := s.channelCandidatesLocked(model.ID, auth.User.GroupID)
 	if len(channels) == 0 {
 		s.openAIErrorForCallLocked(c, http.StatusBadRequest, "model_not_available", "No available channel for model: "+model.ID, "invalid_request_error", stringPtr("model"), auth.User.ID, auth.Key.Prefix, model.ID, "")
 		s.mu.Unlock()
@@ -4580,7 +4763,7 @@ func (s *Server) handleImageGeneration(c *gin.Context, body ImageRequest, starte
 		s.mu.Unlock()
 		return
 	}
-	channels := s.channelCandidatesLocked(model.ID)
+	channels := s.channelCandidatesLocked(model.ID, auth.User.GroupID)
 	if len(channels) == 0 {
 		s.openAIErrorForCallLocked(c, http.StatusBadRequest, "model_not_available", "No available channel for model: "+model.ID, "invalid_request_error", stringPtr("model"), auth.User.ID, auth.Key.Prefix, model.ID, "")
 		s.mu.Unlock()
@@ -4684,7 +4867,7 @@ func (s *Server) handleChatCompletionWithTransform(c *gin.Context, body ChatRequ
 		s.mu.Unlock()
 		return
 	}
-	channels := s.channelCandidatesLocked(model.ID)
+	channels := s.channelCandidatesLocked(model.ID, auth.User.GroupID)
 	if len(channels) == 0 {
 		s.openAIErrorForCallLocked(c, http.StatusBadRequest, "model_not_available", "No available channel for model: "+model.ID, "invalid_request_error", stringPtr("model"), auth.User.ID, auth.Key.Prefix, model.ID, "")
 		s.mu.Unlock()
@@ -9038,6 +9221,67 @@ func (s *Server) findUser(id string) *User {
 	return nil
 }
 
+func (s *Server) findUserGroup(id string) *UserGroup {
+	for i := range s.state.Groups {
+		if s.state.Groups[i].ID == id {
+			return &s.state.Groups[i]
+		}
+	}
+	return nil
+}
+
+func (s *Server) ensureDefaultUserGroupLocked() string {
+	if group := s.findUserGroup(s.state.Settings.Auth.DefaultGroupID); group != nil {
+		return group.ID
+	}
+	for i := range s.state.Groups {
+		if strings.EqualFold(strings.TrimSpace(s.state.Groups[i].Name), "默认分组") {
+			s.state.Settings.Auth.DefaultGroupID = s.state.Groups[i].ID
+			return s.state.Groups[i].ID
+		}
+	}
+	id := "grp_default"
+	if s.findUserGroup(id) != nil {
+		id = newID("grp")
+	}
+	s.state.Groups = append(s.state.Groups, UserGroup{
+		ID:          id,
+		Name:        "默认分组",
+		Description: "新注册用户的默认分组",
+		CreatedAt:   now(),
+	})
+	s.state.Settings.Auth.DefaultGroupID = id
+	return id
+}
+
+func (s *Server) defaultRegistrationGroupIDLocked() string {
+	return s.ensureDefaultUserGroupLocked()
+}
+
+func (s *Server) normalizeUserGroupIDsLocked(values []string) ([]string, error) {
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		id := strings.TrimSpace(value)
+		if id == "" || seen[id] {
+			continue
+		}
+		if s.findUserGroup(id) == nil {
+			return nil, fmt.Errorf("用户分组不存在: %s", id)
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+func channelAllowsUserGroup(channel Channel, groupID string) bool {
+	if len(channel.AllowedGroupIDs) == 0 {
+		return true
+	}
+	return containsString(channel.AllowedGroupIDs, strings.TrimSpace(groupID))
+}
+
 func (s *Server) findAPIKeyByID(id string) *APIKey {
 	for i := range s.state.APIKeys {
 		if s.state.APIKeys[i].ID == id {
@@ -9367,11 +9611,14 @@ func normalizeAPIKeyExpiresAt(value string) (string, error) {
 	return expiresAt.UTC().Format(time.RFC3339), nil
 }
 
-func (s *Server) channelCandidatesLocked(modelID string) []Channel {
+func (s *Server) channelCandidatesLocked(modelID, groupID string) []Channel {
 	candidates := []Channel{}
 	for i := range s.state.Channels {
 		channel := &s.state.Channels[i]
 		if channel.Status == "disabled" {
+			continue
+		}
+		if !channelAllowsUserGroup(*channel, groupID) {
 			continue
 		}
 		for _, id := range channel.Models {
@@ -11150,6 +11397,7 @@ func publicChannel(channel Channel) PublicChannel {
 		Priority:           channel.Priority,
 		Weight:             channel.Weight,
 		Models:             append([]string{}, channel.Models...),
+		AllowedGroupIDs:    append([]string{}, channel.AllowedGroupIDs...),
 		InputPricePer1K:    channel.InputPricePer1K,
 		OutputPricePer1K:   channel.OutputPricePer1K,
 		PricingConfigured:  channel.PricingConfigured,
