@@ -2517,6 +2517,8 @@ func (s *Server) bulkUpdateUsers(c *gin.Context) {
 		return
 	}
 
+	// An empty group id clears the assignment, matching the single-user patch.
+	groupID := strings.TrimSpace(body.Value)
 	switch body.Action {
 	case "set_status":
 		if !allowedString(body.Value, "active", "disabled", "limited", "overdue") {
@@ -2534,6 +2536,11 @@ func (s *Server) bulkUpdateUsers(c *gin.Context) {
 		}
 		if body.Value == "user" && !s.hasActiveAdminAfterBulkLocked(ids, body.Action, body.Value) {
 			validationError(c, "至少需要保留一个启用的管理员")
+			return
+		}
+	case "set_group":
+		if groupID != "" && s.findUserGroup(groupID) == nil {
+			validationError(c, "用户分组不存在")
 			return
 		}
 	case "adjust_balance":
@@ -2565,6 +2572,8 @@ func (s *Server) bulkUpdateUsers(c *gin.Context) {
 		case "set_role":
 			user.Role = body.Value
 			s.syncAccountAccessLocked(user)
+		case "set_group":
+			user.GroupID = groupID
 		case "adjust_balance":
 			user.Balance = round4(user.Balance + body.Amount)
 			s.state.QuotaLedger = append(s.state.QuotaLedger, QuotaEntry{

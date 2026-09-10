@@ -4918,3 +4918,129 @@ func TestIsImmutableBuildAsset(t *testing.T) {
 		}
 	}
 }
+
+func TestBulkSetGroupAssignsAndClears(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, router := testServerRouter(t)
+	seedGatewayFixtures(server)
+
+	created := perform(router, http.MethodPost, "/api/groups", `{"name":"bulk_group","description":"批量"}`, nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create group status = %d body = %s", created.Code, created.Body.String())
+	}
+	var groupPayload struct {
+		Group UserGroup `json:"group"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &groupPayload); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	groupID := groupPayload.Group.ID
+
+	// An unknown group must be rejected before anything is written.
+	unknown := perform(router, http.MethodPost, "/api/users/bulk", `{"userIds":["usr_1002"],"action":"set_group","value":"grp_missing"}`, nil)
+	if unknown.Code != http.StatusBadRequest {
+		t.Fatalf("unknown group bulk status = %d body = %s", unknown.Code, unknown.Body.String())
+	}
+
+	assigned := perform(router, http.MethodPost, "/api/users/bulk", `{"userIds":["usr_1002","usr_1003"],"action":"set_group","value":"`+groupID+`"}`, nil)
+	if assigned.Code != http.StatusOK {
+		t.Fatalf("bulk set_group status = %d body = %s", assigned.Code, assigned.Body.String())
+	}
+	if !bytes.Contains(assigned.Body.Bytes(), []byte(`"groupId":"`+groupID+`"`)) {
+		t.Fatalf("bulk set_group response missing group id: %s", assigned.Body.String())
+	}
+
+	server.mu.Lock()
+	for _, id := range []string{"usr_1002", "usr_1003"} {
+		if user := server.findUser(id); user == nil || user.GroupID != groupID {
+			server.mu.Unlock()
+			t.Fatalf("user %s group after bulk assign = %#v", id, user)
+		}
+	}
+	server.mu.Unlock()
+
+	// An empty value clears the assignment, matching the single-user patch.
+	cleared := perform(router, http.MethodPost, "/api/users/bulk", `{"userIds":["usr_1002"],"action":"set_group","value":""}`, nil)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("bulk clear group status = %d body = %s", cleared.Code, cleared.Body.String())
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if user := server.findUser("usr_1002"); user == nil || user.GroupID != "" {
+		t.Fatalf("user group after bulk clear = %#v", user)
+	}
+	if user := server.findUser("usr_1003"); user == nil || user.GroupID != groupID {
+		t.Fatalf("unselected user should keep its group: %#v", user)
+	}
+}
+
+func TestDefaultRegistrationGroupAppliesToNewUsers(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, router := testServerRouter(t)
+
+	setup := perform(router, http.MethodPost, "/api/auth/setup", `{
+		"username":"root_admin",
+		"password":"correct-horse-battery",
+		"displayName":"Root Admin",
+		"email":"root@example.test",
+		"registrationEnabled":false,
+		"registrationMode":"username"
+	}`, nil)
+	if setup.Code != http.StatusCreated {
+		t.Fatalf("setup status = %d body = %s", setup.Code, setup.Body.String())
+	}
+
+	created := perform(router, http.MethodPost, "/api/groups", `{"name":"newcomers","description":"新用户"}`, nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create group status = %d body = %s", created.Code, created.Body.String())
+	}
+	var groupPayload struct {
+		Group UserGroup `json:"group"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &groupPayload); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	groupID := groupPayload.Group.ID
+
+	// The default group is reported back and persisted.
+	settings := perform(router, http.MethodGet, "/api/settings/auth", "", nil)
+	if settings.Code != http.StatusOK || !bytes.Contains(settings.Body.Bytes(), []byte(`"defaultGroupId"`)) {
+		t.Fatalf("auth settings status = %d body = %s", settings.Code, settings.Body.String())
+	}
+	updated := perform(router, http.MethodPatch, "/api/settings/auth", `{"registrationEnabled":true,"defaultGroupId":"`+groupID+`"}`, nil)
+	if updated.Code != http.StatusOK || !bytes.Contains(updated.Body.Bytes(), []byte(`"defaultGroupId":"`+groupID+`"`)) {
+		t.Fatalf("update default group status = %d body = %s", updated.Code, updated.Body.String())
+	}
+
+	// An unknown default group must be rejected.
+	badDefault := perform(router, http.MethodPatch, "/api/settings/auth", `{"registrationEnabled":true,"defaultGroupId":"grp_missing"}`, nil)
+	if badDefault.Code != http.StatusBadRequest {
+		t.Fatalf("unknown default group status = %d body = %s", badDefault.Code, badDefault.Body.String())
+	}
+
+	register := perform(router, http.MethodPost, "/api/auth/register", `{
+		"username":"newcomer",
+		"password":"safe-password-123",
+		"displayName":"Newcomer",
+		"email":"newcomer@example.test"
+	}`, nil)
+	if register.Code != http.StatusCreated {
+		t.Fatalf("register status = %d body = %s", register.Code, register.Body.String())
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	var registered *User
+	for i := range server.state.Users {
+		if strings.EqualFold(server.state.Users[i].Email, "newcomer@example.test") {
+			registered = &server.state.Users[i]
+			break
+		}
+	}
+	if registered == nil {
+		t.Fatal("registered user not found")
+	}
+	if registered.GroupID != groupID {
+		t.Fatalf("new user group = %q, want %q", registered.GroupID, groupID)
+	}
+}
