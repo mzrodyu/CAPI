@@ -277,6 +277,19 @@ type MaintenanceSettings = {
   maxQuotaEntries: number;
 };
 
+type CheckInSettings = {
+  enabled: boolean;
+  minReward: number;
+  maxReward: number;
+};
+
+type CheckInStatus = CheckInSettings & {
+  day: string;
+  claimed: boolean;
+  reward: number;
+  claimedAt: string;
+};
+
 type AccountProfile = {
   id: string;
   userId: string;
@@ -1116,6 +1129,22 @@ function App() {
   }
 
   useEffect(() => {
+    let cancelled = false;
+    fetchJson<AuthStatus>("/api/auth/status")
+      .then((status) => {
+        if (cancelled) return;
+        setAuthStatus(status);
+        if (status.authenticated && status.session) {
+          setSurface(status.session.role === "admin" ? "console" : "account");
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (surface !== "console") return;
     setConsoleReady(false);
     loadAll().catch((error) => handleLoadError(error, "加载数据失败"));
@@ -1517,17 +1546,22 @@ function AccountHome({
 }) {
   const [data, setData] = useState<{ user: User; apiKeys: ApiKey[]; session: AuthSession } | null>(null);
   const [models, setModels] = useState<ModelItem[]>([]);
+  const [checkIn, setCheckIn] = useState<CheckInStatus | null>(null);
+  const [claiming, setClaiming] = useState(false);
+  const [checkInMessage, setCheckInMessage] = useState("");
   const [newSecret, setNewSecret] = useState("");
   const [message, setMessage] = useState("");
 
   async function load() {
     try {
-      const [account, catalog] = await Promise.all([
+      const [account, catalog, checkInData] = await Promise.all([
         fetchJson<{ user: User; apiKeys: ApiKey[]; session: AuthSession }>("/api/account/me"),
-        fetchJson<{ models: ModelItem[] }>("/api/catalog/models")
+        fetchJson<{ models: ModelItem[] }>("/api/catalog/models"),
+        fetchJson<{ checkIn: CheckInStatus }>("/api/account/check-in")
       ]);
       setData({ ...account, apiKeys: arrayOf(account.apiKeys) });
       setModels(arrayOf(catalog.models).map(normalizeModel));
+      setCheckIn(checkInData.checkIn);
     } catch {
       openLogin();
     }
@@ -1536,6 +1570,25 @@ function AccountHome({
   useEffect(() => {
     load();
   }, []);
+
+  async function claimCheckIn() {
+    if (!checkIn?.enabled || checkIn.claimed || claiming) return;
+    setClaiming(true);
+    setCheckInMessage("");
+    try {
+      const result = await fetchJson<{ reward: number; user: User; checkIn: CheckInStatus }>("/api/account/check-in", {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      setData((current) => current ? { ...current, user: result.user } : current);
+      setCheckIn(result.checkIn);
+      setCheckInMessage(`签到成功，获得 ${result.reward.toFixed(2)} 额度`);
+    } catch (error) {
+      setCheckInMessage(error instanceof Error ? error.message : "签到失败，请稍后重试");
+    } finally {
+      setClaiming(false);
+    }
+  }
 
   async function createKey() {
     try {
@@ -1582,6 +1635,38 @@ function AccountHome({
             <strong>{data ? data.user.balance.toFixed(2) : "-"}</strong>
           </div>
         </div>
+
+        <section className="account-section check-in-section">
+          <div className="account-section-title">
+            <div>
+              <p className="eyebrow">Daily Reward</p>
+              <h2>每日签到</h2>
+            </div>
+            <button
+              className="primary-button"
+              disabled={!checkIn?.enabled || Boolean(checkIn?.claimed) || claiming}
+              onClick={claimCheckIn}
+            >
+              {claiming ? "领取中" : checkIn?.claimed ? "今日已签到" : checkIn?.enabled ? "签到领额度" : "暂未开放"}
+            </button>
+          </div>
+          <div className="check-in-summary">
+            <div>
+              <span>今日状态</span>
+              <strong>{checkIn?.claimed ? `已领取 ${checkIn.reward.toFixed(2)}` : checkIn?.enabled ? "等待签到" : "活动关闭"}</strong>
+            </div>
+            <div>
+              <span>随机奖励</span>
+              <strong>{checkIn ? `${checkIn.minReward.toFixed(2)} - ${checkIn.maxReward.toFixed(2)}` : "-"}</strong>
+            </div>
+            <div>
+              <span>结算日期</span>
+              <strong>{checkIn?.day || "北京时间"}</strong>
+            </div>
+          </div>
+          <p className="check-in-note">每天按北京时间 00:00 刷新，奖励领取后直接计入账户余额。</p>
+          {checkInMessage && <p className="account-message check-in-message" role="status">{checkInMessage}</p>}
+        </section>
 
         <section className="account-section">
           <div className="account-section-title">
@@ -3791,6 +3876,11 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean | null>(null);
   const [registrationMode, setRegistrationMode] = useState<RegistrationMode>("username");
   const [defaultBalance, setDefaultBalance] = useState("0");
+  const [checkInSettings, setCheckInSettings] = useState<CheckInSettings>({
+    enabled: true,
+    minReward: 0.1,
+    maxReward: 1
+  });
   const [maintenance, setMaintenance] = useState<MaintenanceSettings>({
     logRetentionDays: 30,
     maxLogs: 10000,
@@ -3814,6 +3904,7 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
     { value: "system", label: "系统", description: "运行概况" },
     { value: "cli", label: "CLI 接入", description: "一键配置" },
     { value: "auth", label: "注册", description: "开放方式" },
+    { value: "check-in", label: "签到", description: "奖励范围" },
     { value: "admin", label: "管理员", description: "账号绑定" },
     { value: "discord", label: "Discord", description: "登录限制" },
     { value: "maintenance", label: "维护", description: "日志保留" },
@@ -3825,15 +3916,17 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
     Promise.all([
       fetchJson<{ discord: DiscordSettings }>("/api/settings/discord"),
       fetchJson<{ auth: AuthSettings }>("/api/settings/auth"),
+      fetchJson<{ checkIn: CheckInSettings }>("/api/settings/check-in"),
       fetchJson<{ account: AccountProfile; user: User }>("/api/account/me"),
       fetchJson<{ maintenance: MaintenanceSettings }>("/api/settings/maintenance"),
       fetchJson<BuildHealth>("/api/health")
     ])
-      .then(([discordData, authData, accountData, maintenanceData, healthData]) => {
+      .then(([discordData, authData, checkInData, accountData, maintenanceData, healthData]) => {
         setDiscord(withBrowserDiscordDefaults(discordData.discord));
         setRegistrationEnabled(authData.auth.registrationEnabled);
         setRegistrationMode(normalizeRegistrationMode(authData.auth.registrationMode));
         setDefaultBalance(String(authData.auth.defaultBalance || 0));
+        setCheckInSettings(checkInData.checkIn);
         setAccount(accountData.account);
         setAccountUsername(accountData.account?.username || "");
         setAccountDisplayName(accountData.user.name || "");
@@ -3864,6 +3957,23 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
   async function toggleRegistration() {
     if (registrationEnabled === null) return;
     saveAuthSettings(!registrationEnabled, registrationMode);
+  }
+
+  async function saveCheckInSettings() {
+    setSaving(true);
+    setMessage("");
+    try {
+      const data = await fetchJson<{ checkIn: CheckInSettings }>("/api/settings/check-in", {
+        method: "PATCH",
+        body: JSON.stringify(checkInSettings)
+      });
+      setCheckInSettings(data.checkIn);
+      setMessage(data.checkIn.enabled ? "签到奖励设置已保存" : "已关闭每日签到");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "签到设置保存失败");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function saveDiscordSettings() {
@@ -4225,6 +4335,67 @@ response = client.chat.completions.create(
                 保存
               </button>
             </div>
+          </div>
+        </div>
+      </Panel>
+      )}
+
+      {settingsTab === "check-in" && (
+      <Panel title="每日签到奖励">
+        <div className="settings-group">
+          <div className="setting">
+            <span>
+              开放每日签到
+              <small>用户每天可领取一次随机额度，按北京时间刷新</small>
+            </span>
+            <div className="setting-value">
+              <strong>{checkInSettings.enabled ? "启用" : "关闭"}</strong>
+              <button
+                type="button"
+                className={checkInSettings.enabled ? "ios-switch is-on" : "ios-switch"}
+                aria-label={checkInSettings.enabled ? "关闭每日签到" : "开放每日签到"}
+                aria-pressed={checkInSettings.enabled}
+                onClick={() => setCheckInSettings((current) => ({ ...current, enabled: !current.enabled }))}
+              >
+                <span />
+              </button>
+            </div>
+          </div>
+          <div className="setting check-in-settings-row">
+            <span>
+              随机奖励范围
+              <small>领取金额精确到 0.01，直接计入用户余额和额度流水</small>
+            </span>
+            <div className="check-in-reward-inputs">
+              <label>
+                <span>最低</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  max="1000000"
+                  step="0.01"
+                  value={checkInSettings.minReward}
+                  onChange={(event) => setCheckInSettings((current) => ({ ...current, minReward: Number(event.target.value) }))}
+                />
+              </label>
+              <label>
+                <span>最高</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  max="1000000"
+                  step="0.01"
+                  value={checkInSettings.maxReward}
+                  onChange={(event) => setCheckInSettings((current) => ({ ...current, maxReward: Number(event.target.value) }))}
+                />
+              </label>
+            </div>
+          </div>
+          <div className="settings-save-row">
+            <span role="status">{message}</span>
+            <button type="button" className="primary-button" disabled={saving} onClick={saveCheckInSettings}>
+              {saving ? "保存中" : "保存签到设置"}
+            </button>
           </div>
         </div>
       </Panel>

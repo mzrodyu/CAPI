@@ -387,6 +387,68 @@ func TestRegistrationDefaultBalanceAndBulkUserActions(t *testing.T) {
 	}
 }
 
+func TestDailyCheckInCreditsBalanceOncePerBeijingDay(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, router := testServerRouter(t)
+	server.mu.Lock()
+	server.state.Users = []User{{ID: "usr_checkin", Name: "Check In User", Role: "user", Status: "active", Balance: 5}}
+	server.state.Accounts = []Account{{ID: "acct_checkin", UserID: "usr_checkin", Username: "checkin", Role: "user", Status: "active"}}
+	server.state.Settings.CheckIn = CheckInSettings{Managed: true, Enabled: true, MinReward: 1.25, MaxReward: 1.25}
+	server.mu.Unlock()
+
+	session := server.createAccountSession(server.state.Accounts[0], "Check In User", "password")
+	headers := map[string]string{"Cookie": "capi_session=" + session.ID}
+	status := perform(router, http.MethodGet, "/api/account/check-in", "", headers)
+	if status.Code != http.StatusOK || !bytes.Contains(status.Body.Bytes(), []byte(`"claimed":false`)) {
+		t.Fatalf("initial check-in status = %d body = %s", status.Code, status.Body.String())
+	}
+
+	claim := perform(router, http.MethodPost, "/api/account/check-in", `{}`, headers)
+	if claim.Code != http.StatusCreated || !bytes.Contains(claim.Body.Bytes(), []byte(`"reward":1.25`)) {
+		t.Fatalf("check-in claim = %d body = %s", claim.Code, claim.Body.String())
+	}
+	repeat := perform(router, http.MethodPost, "/api/account/check-in", `{}`, headers)
+	if repeat.Code != http.StatusConflict {
+		t.Fatalf("duplicate check-in status = %d body = %s", repeat.Code, repeat.Body.String())
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if user := server.findUser("usr_checkin"); user == nil || user.Balance != 6.25 {
+		t.Fatalf("balance after check-in = %#v", user)
+	}
+	if len(server.state.CheckIns) != 1 || server.state.CheckIns[0].Day != checkInDay(time.Now()) {
+		t.Fatalf("check-in records = %#v", server.state.CheckIns)
+	}
+	if len(server.state.QuotaLedger) != 1 || server.state.QuotaLedger[0].Amount != 1.25 || server.state.QuotaLedger[0].Reason != "每日签到奖励" {
+		t.Fatalf("check-in quota ledger = %#v", server.state.QuotaLedger)
+	}
+}
+
+func TestCheckInSettingsValidationAndDisabledClaim(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, router := testServerRouter(t)
+	invalid := perform(router, http.MethodPatch, "/api/settings/check-in", `{"enabled":true,"minReward":2,"maxReward":1}`, nil)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid reward range status = %d body = %s", invalid.Code, invalid.Body.String())
+	}
+	updated := perform(router, http.MethodPatch, "/api/settings/check-in", `{"enabled":false,"minReward":0.1,"maxReward":0.5}`, nil)
+	if updated.Code != http.StatusOK || !bytes.Contains(updated.Body.Bytes(), []byte(`"enabled":false`)) {
+		t.Fatalf("disabled check-in settings = %d body = %s", updated.Code, updated.Body.String())
+	}
+
+	server.mu.Lock()
+	server.state.Users = []User{{ID: "usr_disabled_checkin", Role: "user", Status: "active"}}
+	account := Account{ID: "acct_disabled_checkin", UserID: "usr_disabled_checkin", Username: "disabled", Role: "user", Status: "active"}
+	server.state.Accounts = []Account{account}
+	server.mu.Unlock()
+	session := server.createAccountSession(account, "Disabled", "password")
+	claim := perform(router, http.MethodPost, "/api/account/check-in", `{}`, map[string]string{"Cookie": "capi_session=" + session.ID})
+	if claim.Code != http.StatusForbidden {
+		t.Fatalf("disabled check-in claim status = %d body = %s", claim.Code, claim.Body.String())
+	}
+}
+
 func TestFirstRunSetupLoginRegistrationAndRoleIsolation(t *testing.T) {
 	dataFile := filepath.Join(t.TempDir(), "state.json")
 	withEnv(t, map[string]string{

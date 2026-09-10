@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"mime/multipart"
 	"net/http"
 	"net/mail"
@@ -67,19 +68,21 @@ var (
 var imageJSONKeepaliveInterval = 8 * time.Second
 
 type AppState struct {
-	Users       []User       `json:"users"`
-	APIKeys     []APIKey     `json:"apiKeys"`
-	Channels    []Channel    `json:"channels"`
-	Models      []Model      `json:"models"`
-	QuotaLedger []QuotaEntry `json:"quotaLedger"`
-	Logs        []RequestLog `json:"logs"`
-	Accounts    []Account    `json:"accounts,omitempty"`
-	Settings    AppSettings  `json:"settings,omitempty"`
+	Users       []User          `json:"users"`
+	APIKeys     []APIKey        `json:"apiKeys"`
+	Channels    []Channel       `json:"channels"`
+	Models      []Model         `json:"models"`
+	QuotaLedger []QuotaEntry    `json:"quotaLedger"`
+	CheckIns    []CheckInRecord `json:"checkIns"`
+	Logs        []RequestLog    `json:"logs"`
+	Accounts    []Account       `json:"accounts,omitempty"`
+	Settings    AppSettings     `json:"settings,omitempty"`
 }
 
 type AppSettings struct {
 	Discord     DiscordSettings     `json:"discord,omitempty"`
 	Auth        AuthSettings        `json:"auth,omitempty"`
+	CheckIn     CheckInSettings     `json:"checkIn,omitempty"`
 	Maintenance MaintenanceSettings `json:"maintenance,omitempty"`
 }
 
@@ -95,6 +98,13 @@ type AuthSettings struct {
 	RegistrationEnabled bool    `json:"registrationEnabled"`
 	RegistrationMode    string  `json:"registrationMode,omitempty"`
 	DefaultBalance      float64 `json:"defaultBalance"`
+}
+
+type CheckInSettings struct {
+	Managed   bool    `json:"managed,omitempty"`
+	Enabled   bool    `json:"enabled"`
+	MinReward float64 `json:"minReward"`
+	MaxReward float64 `json:"maxReward"`
 }
 
 type Account struct {
@@ -352,6 +362,14 @@ type QuotaEntry struct {
 	Model     string  `json:"model"`
 	Amount    float64 `json:"amount"`
 	Reason    string  `json:"reason"`
+	CreatedAt string  `json:"createdAt"`
+}
+
+type CheckInRecord struct {
+	ID        string  `json:"id"`
+	UserID    string  `json:"userId"`
+	Day       string  `json:"day"`
+	Reward    float64 `json:"reward"`
 	CreatedAt string  `json:"createdAt"`
 }
 
@@ -881,6 +899,8 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	account := api.Group("/account")
 	account.Use(s.accountMiddleware())
 	account.GET("/me", s.accountMe)
+	account.GET("/check-in", s.checkInStatus)
+	account.POST("/check-in", s.claimCheckIn)
 	account.POST("/api-keys", s.createOwnAPIKey)
 	account.PATCH("/profile", s.updateAccountProfile)
 
@@ -917,6 +937,8 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	admin.PATCH("/settings/discord", s.updateDiscordSettings)
 	admin.GET("/settings/auth", s.getAuthSettings)
 	admin.PATCH("/settings/auth", s.updateAuthSettings)
+	admin.GET("/settings/check-in", s.getCheckInSettings)
+	admin.PATCH("/settings/check-in", s.updateCheckInSettings)
 	admin.GET("/settings/maintenance", s.getMaintenanceSettings)
 	admin.PATCH("/settings/maintenance", s.updateMaintenanceSettings)
 	admin.GET("/backup", s.exportBackup)
@@ -1428,6 +1450,42 @@ func (s *Server) updateAuthSettings(c *gin.Context) {
 	}})
 }
 
+func (s *Server) getCheckInSettings(c *gin.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c.JSON(http.StatusOK, gin.H{"checkIn": s.checkInSettingsLocked()})
+}
+
+func (s *Server) updateCheckInSettings(c *gin.Context) {
+	var body struct {
+		Enabled   bool    `json:"enabled"`
+		MinReward float64 `json:"minReward"`
+		MaxReward float64 `json:"maxReward"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		validationError(c, "无效的签到设置")
+		return
+	}
+	body.MinReward = round2(body.MinReward)
+	body.MaxReward = round2(body.MaxReward)
+	if body.MinReward < 0.01 || body.MaxReward > 1_000_000 {
+		validationError(c, "签到奖励必须在 0.01 到 1000000 之间")
+		return
+	}
+	if body.MinReward > body.MaxReward {
+		validationError(c, "最低奖励不能高于最高奖励")
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Settings.CheckIn = CheckInSettings{
+		Managed: true, Enabled: body.Enabled,
+		MinReward: body.MinReward, MaxReward: body.MaxReward,
+	}
+	s.saveStateLocked()
+	c.JSON(http.StatusOK, gin.H{"checkIn": s.checkInSettingsLocked()})
+}
+
 func (s *Server) getMaintenanceSettings(c *gin.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1895,6 +1953,74 @@ func (s *Server) logout(c *gin.Context) {
 		MaxAge:   -1,
 	})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) checkInStatus(c *gin.Context) {
+	session, ok := s.sessionFromRequest(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "Login required"}})
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.findUser(session.UserID) == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "User not found"}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"checkIn": s.checkInStatusLocked(session.UserID, time.Now())})
+}
+
+func (s *Server) claimCheckIn(c *gin.Context) {
+	session, ok := s.sessionFromRequest(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "Login required"}})
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings := s.checkInSettingsLocked()
+	if !settings.Enabled {
+		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"message": "每日签到暂未开放"}})
+		return
+	}
+	user := s.findUser(session.UserID)
+	if user == nil || user.Status == "disabled" {
+		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"message": "User account is not available"}})
+		return
+	}
+	day := checkInDay(time.Now())
+	if s.findCheckInLocked(user.ID, day) != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"message": "今天已经签到过了"}})
+		return
+	}
+	reward, err := randomCheckInReward(settings.MinReward, settings.MaxReward)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "签到奖励生成失败"}})
+		return
+	}
+	record := CheckInRecord{
+		ID:        newID("checkin"),
+		UserID:    user.ID,
+		Day:       day,
+		Reward:    reward,
+		CreatedAt: now(),
+	}
+	user.Balance = round4(user.Balance + reward)
+	s.state.CheckIns = append(s.state.CheckIns, record)
+	s.state.QuotaLedger = append(s.state.QuotaLedger, QuotaEntry{
+		ID:        newID("quota"),
+		UserID:    user.ID,
+		RequestID: record.ID,
+		Amount:    reward,
+		Reason:    "每日签到奖励",
+		CreatedAt: record.CreatedAt,
+	})
+	s.saveStateLocked()
+	c.JSON(http.StatusCreated, gin.H{
+		"reward":  reward,
+		"user":    user,
+		"checkIn": s.checkInStatusLocked(user.ID, time.Now()),
+	})
 }
 
 func (s *Server) accountMe(c *gin.Context) {
@@ -8823,6 +8949,60 @@ func (s *Server) defaultRegistrationBalanceLocked() float64 {
 	return round4(s.state.Settings.Auth.DefaultBalance)
 }
 
+func (s *Server) checkInSettingsLocked() CheckInSettings {
+	settings := s.state.Settings.CheckIn
+	if !settings.Managed {
+		return CheckInSettings{Enabled: true, MinReward: 0.1, MaxReward: 1}
+	}
+	return settings
+}
+
+func (s *Server) findCheckInLocked(userID string, day string) *CheckInRecord {
+	for i := range s.state.CheckIns {
+		if s.state.CheckIns[i].UserID == userID && s.state.CheckIns[i].Day == day {
+			return &s.state.CheckIns[i]
+		}
+	}
+	return nil
+}
+
+func (s *Server) checkInStatusLocked(userID string, at time.Time) gin.H {
+	settings := s.checkInSettingsLocked()
+	day := checkInDay(at)
+	record := s.findCheckInLocked(userID, day)
+	claimed := record != nil
+	reward := 0.0
+	claimedAt := ""
+	if record != nil {
+		reward = record.Reward
+		claimedAt = record.CreatedAt
+	}
+	return gin.H{
+		"enabled": settings.Enabled, "day": day, "claimed": claimed,
+		"reward": reward, "claimedAt": claimedAt,
+		"minReward": settings.MinReward, "maxReward": settings.MaxReward,
+	}
+}
+
+func checkInDay(at time.Time) string {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	return at.In(location).Format("2006-01-02")
+}
+
+func randomCheckInReward(minReward float64, maxReward float64) (float64, error) {
+	minCents := int64(math.Round(minReward * 100))
+	maxCents := int64(math.Round(maxReward * 100))
+	if minCents < 1 || maxCents < minCents {
+		return 0, fmt.Errorf("invalid check-in reward range")
+	}
+	rangeSize := big.NewInt(maxCents - minCents + 1)
+	value, err := rand.Int(rand.Reader, rangeSize)
+	if err != nil {
+		return 0, err
+	}
+	return float64(minCents+value.Int64()) / 100, nil
+}
+
 func (s *Server) appendInitialQuotaLocked(user *User) {
 	if user == nil || user.Balance <= 0 {
 		return
@@ -9326,13 +9506,16 @@ func (s *Server) loadState() {
 	if stored.QuotaLedger != nil {
 		s.state.QuotaLedger = stored.QuotaLedger
 	}
+	if stored.CheckIns != nil {
+		s.state.CheckIns = stored.CheckIns
+	}
 	if stored.Logs != nil {
 		s.state.Logs = stored.Logs
 	}
 	if stored.Accounts != nil {
 		s.state.Accounts = stored.Accounts
 	}
-	if stored.Settings.Discord.Managed || stored.Settings.Auth.Managed {
+	if stored.Settings.Discord.Managed || stored.Settings.Auth.Managed || stored.Settings.CheckIn.Managed || stored.Settings.Maintenance.Managed {
 		s.state.Settings = stored.Settings
 	}
 	changed := false
@@ -9565,6 +9748,10 @@ func (s *Server) normalizeStateCollections() bool {
 			changed = true
 		}
 	}
+	if s.state.CheckIns == nil {
+		s.state.CheckIns = []CheckInRecord{}
+		changed = true
+	}
 	return changed
 }
 
@@ -9707,13 +9894,16 @@ func (s *Server) loadPostgresState() {
 	if stored.QuotaLedger != nil {
 		s.state.QuotaLedger = stored.QuotaLedger
 	}
+	if stored.CheckIns != nil {
+		s.state.CheckIns = stored.CheckIns
+	}
 	if stored.Logs != nil {
 		s.state.Logs = stored.Logs
 	}
 	if stored.Accounts != nil {
 		s.state.Accounts = stored.Accounts
 	}
-	if stored.Settings.Discord.Managed || stored.Settings.Auth.Managed {
+	if stored.Settings.Discord.Managed || stored.Settings.Auth.Managed || stored.Settings.CheckIn.Managed || stored.Settings.Maintenance.Managed {
 		s.state.Settings = stored.Settings
 	}
 	changed := false
@@ -9756,6 +9946,7 @@ func defaultState() AppState {
 		Channels:    []Channel{},
 		Models:      []Model{},
 		QuotaLedger: []QuotaEntry{},
+		CheckIns:    []CheckInRecord{},
 		Logs:        []RequestLog{},
 		Accounts:    []Account{},
 	}
@@ -10909,6 +11100,14 @@ func stringSlice(values []interface{}) []string {
 		if str, ok := value.(string); ok {
 			result = append(result, str)
 		}
+	}
+	return result
+}
+
+func round2(value float64) float64 {
+	result, err := strconv.ParseFloat(fmt.Sprintf("%.2f", value), 64)
+	if err != nil {
+		return value
 	}
 	return result
 }

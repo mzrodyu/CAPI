@@ -2925,6 +2925,39 @@ button.table-row:hover {
   width: 130px;
 }
 
+.check-in-settings-row {
+  align-items: center;
+}
+
+.check-in-reward-inputs {
+  display: grid;
+  grid-template-columns: repeat(2, 120px);
+  gap: 10px;
+}
+
+.check-in-reward-inputs label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.check-in-reward-inputs input {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--group);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  outline: none;
+}
+
+.check-in-reward-inputs input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+}
+
 .maintenance-control input {
   width: 150px;
   height: 38px;
@@ -3368,6 +3401,62 @@ button.table-row:hover {
   background: var(--surface-solid);
   border: 1px solid var(--hairline);
   border-radius: 18px;
+}
+
+.check-in-section {
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 100% 0, color-mix(in srgb, var(--blue) 14%, transparent), transparent 44%),
+    var(--surface-solid);
+}
+
+.check-in-section .account-section-title > div {
+  display: grid;
+  gap: 4px;
+}
+
+.check-in-section .eyebrow,
+.check-in-section h2 {
+  margin: 0;
+}
+
+.check-in-section .primary-button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.check-in-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.check-in-summary > div {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  background: var(--group);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.check-in-summary span,
+.check-in-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.check-in-summary strong {
+  font-size: 15px;
+}
+
+.check-in-note {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.check-in-message {
+  color: var(--blue);
 }
 
 .one-time-secret {
@@ -4204,8 +4293,23 @@ button.table-row:hover {
     padding: 18px;
   }
 
-  .account-model-grid {
+  .account-model-grid,
+  .check-in-summary {
     grid-template-columns: 1fr;
+  }
+
+  .check-in-section .account-section-title {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .check-in-section .primary-button {
+    width: 100%;
+  }
+
+  .check-in-reward-inputs {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .account-heading {
