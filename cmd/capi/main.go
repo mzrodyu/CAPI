@@ -8382,16 +8382,63 @@ func (s *Server) serveStatic(c *gin.Context) bool {
 	cleanPath := strings.TrimPrefix(filepath.Clean("/"+requestPath), string(filepath.Separator))
 	target := filepath.Join(s.staticDir, cleanPath)
 	if info, err := os.Stat(target); err == nil && !info.IsDir() {
+		setStaticCacheHeaders(c, cleanPath)
 		c.File(target)
 		return true
 	}
 
 	indexPath := filepath.Join(s.staticDir, "index.html")
 	if info, err := os.Stat(indexPath); err == nil && !info.IsDir() {
+		setStaticCacheHeaders(c, "index.html")
 		c.File(indexPath)
 		return true
 	}
 	return false
+}
+
+// setStaticCacheHeaders keeps the SPA entry point revalidated while letting
+// content-hashed build assets cache forever.
+//
+// index.html is served for every unmatched route and its filename carries no
+// hash, so a cached copy pins the browser (and any intermediary such as
+// Cloudflare) to whatever assets existed at cache time. Without an explicit
+// directive that stale copy is only re-fetched by heuristic freshness, which is
+// why a redeploy can appear to have no effect. Vite's hashed filenames are
+// immutable by construction, so they are safe to cache aggressively.
+func setStaticCacheHeaders(c *gin.Context, requestPath string) {
+	if isImmutableBuildAsset(requestPath) {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	c.Header("Cache-Control", "no-cache, must-revalidate")
+}
+
+func isImmutableBuildAsset(requestPath string) bool {
+	base := filepath.Base(requestPath)
+	extension := filepath.Ext(base)
+	if extension == "" {
+		return false
+	}
+	name := strings.TrimSuffix(base, extension)
+	index := strings.LastIndex(name, "-")
+	if index < 0 {
+		return false
+	}
+	hash := name[index+1:]
+	if len(hash) < 8 {
+		return false
+	}
+	for _, char := range hash {
+		switch {
+		case char >= 'a' && char <= 'z':
+		case char >= 'A' && char <= 'Z':
+		case char >= '0' && char <= '9':
+		case char == '-' || char == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func containsString(values []string, needle string) bool {
