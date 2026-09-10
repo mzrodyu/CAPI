@@ -3403,6 +3403,11 @@ button.table-row:hover {
   gap: 14px;
 }
 
+.account-section-title > div {
+  display: grid;
+  gap: 3px;
+}
+
 .account-content {
   display: grid;
   width: min(1120px, calc(100% - 40px));
@@ -3447,8 +3452,12 @@ button.table-row:hover {
 .check-in-section {
   overflow: hidden;
   background:
-    radial-gradient(circle at 100% 0, color-mix(in srgb, var(--blue) 14%, transparent), transparent 44%),
-    var(--surface-solid);
+    radial-gradient(circle at 100% 0, color-mix(in srgb, var(--blue) 22%, transparent), transparent 48%),
+    var(--glass);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(26px) saturate(180%);
+  backdrop-filter: blur(26px) saturate(180%);
 }
 
 .check-in-section .account-section-title > div {
@@ -3583,6 +3592,17 @@ button.table-row:hover {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+}
+
+.account-model-empty {
+  grid-column: 1 / -1;
+  padding: 26px 18px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+  background: color-mix(in srgb, var(--group) 60%, transparent);
+  border: 1px dashed var(--hairline);
+  border-radius: 14px;
 }
 
 .account-model-grid article {
@@ -6222,4 +6242,104 @@ input[type="radio"]:active {
   .pulse-dot {
     animation: none;
   }
+}
+
+/* ============================================================
+   iOS 26 liquid-glass surface system
+   Frosted, layered cards with ambient depth behind them.
+   ============================================================ */
+
+/* Glass tokens + ambient page wash — console scope. */
+.app-shell {
+  --glass: linear-gradient(158deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.64) 100%);
+  --glass-border: rgba(255, 255, 255, 0.72);
+  --glass-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 1px 2px rgba(17, 24, 39, 0.04),
+    0 12px 34px rgba(17, 24, 39, 0.08);
+  background:
+    radial-gradient(1120px 620px at 6% -8%, rgba(0, 122, 255, 0.10), transparent 58%),
+    radial-gradient(960px 560px at 102% 2%, rgba(48, 176, 199, 0.10), transparent 56%),
+    radial-gradient(900px 760px at 50% 118%, rgba(255, 149, 0, 0.06), transparent 60%),
+    var(--bg);
+}
+
+.app-shell[data-theme="dark"] {
+  --glass: linear-gradient(158deg, rgba(58, 58, 66, 0.72) 0%, rgba(28, 28, 34, 0.6) 100%);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 2px 6px rgba(0, 0, 0, 0.3),
+    0 18px 44px rgba(0, 0, 0, 0.48);
+  background:
+    radial-gradient(1120px 620px at 6% -8%, rgba(10, 132, 255, 0.18), transparent 58%),
+    radial-gradient(960px 560px at 102% 2%, rgba(48, 176, 199, 0.15), transparent 56%),
+    radial-gradient(900px 760px at 50% 120%, rgba(120, 88, 255, 0.14), transparent 60%),
+    var(--bg);
+}
+
+/* Glass tokens + ambient page wash — account / auth scope. */
+.account-page,
+.auth-page {
+  --glass: linear-gradient(158deg, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.66) 100%);
+  --glass-border: rgba(255, 255, 255, 0.75);
+  --glass-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    0 1px 2px rgba(17, 24, 39, 0.04),
+    0 16px 40px rgba(17, 24, 39, 0.09);
+  background:
+    radial-gradient(1080px 640px at 4% -10%, rgba(0, 122, 255, 0.12), transparent 56%),
+    radial-gradient(940px 560px at 104% 4%, rgba(48, 176, 199, 0.10), transparent 54%),
+    radial-gradient(880px 720px at 52% 120%, rgba(175, 82, 222, 0.07), transparent 60%),
+    var(--bg);
+}
+
+.account-page[data-theme="dark"],
+.auth-page[data-theme="dark"] {
+  --glass: linear-gradient(158deg, rgba(58, 58, 66, 0.7) 0%, rgba(24, 24, 30, 0.58) 100%);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 2px 6px rgba(0, 0, 0, 0.35),
+    0 22px 52px rgba(0, 0, 0, 0.5);
+  background:
+    radial-gradient(1080px 640px at 4% -10%, rgba(10, 132, 255, 0.22), transparent 56%),
+    radial-gradient(940px 560px at 104% 4%, rgba(48, 176, 199, 0.16), transparent 54%),
+    radial-gradient(880px 720px at 52% 122%, rgba(175, 82, 222, 0.16), transparent 60%),
+    var(--bg);
+}
+
+/* Apply the glass material to the main card families (token-driven per theme). */
+.metric,
+.panel,
+.account-section:not(.check-in-section),
+.settings-group,
+.model-card,
+.channel-card,
+.flow-panel,
+.hero-strip,
+.model-hero,
+.log-inspector,
+.source-guide-item {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(26px) saturate(185%);
+  backdrop-filter: blur(26px) saturate(185%);
+}
+
+/* Override the older solid dark-theme card fills so glass wins in dark mode. */
+.app-shell[data-theme="dark"] .metric,
+.app-shell[data-theme="dark"] .panel,
+.app-shell[data-theme="dark"] .settings-group,
+.app-shell[data-theme="dark"] .model-card,
+.app-shell[data-theme="dark"] .channel-card,
+.app-shell[data-theme="dark"] .flow-panel,
+.app-shell[data-theme="dark"] .hero-strip,
+.app-shell[data-theme="dark"] .model-hero,
+.app-shell[data-theme="dark"] .log-inspector,
+.app-shell[data-theme="dark"] .source-guide-item {
+  background: var(--glass);
+  border-color: var(--glass-border);
+  box-shadow: var(--glass-shadow);
 }
