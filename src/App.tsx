@@ -1673,7 +1673,10 @@ function AccountHome({
 
         <section className="account-section">
           <div className="account-section-title">
-            <h2>API 密钥</h2>
+            <div>
+              <p className="eyebrow">API Keys</p>
+              <h2>API 密钥</h2>
+            </div>
             <button className="primary-button" onClick={createKey}>创建密钥</button>
           </div>
           {newSecret && <code className="one-time-secret">{newSecret}</code>}
@@ -1694,7 +1697,12 @@ function AccountHome({
         </section>
 
         <section className="account-section">
-          <div className="account-section-title"><h2>可用模型</h2></div>
+          <div className="account-section-title">
+            <div>
+              <p className="eyebrow">Models</p>
+              <h2>可用模型</h2>
+            </div>
+          </div>
           <div className="account-model-grid">
             {models.map((model) => (
               <article key={model.id}>
@@ -1704,6 +1712,7 @@ function AccountHome({
                 <code>{model.id}</code>
               </article>
             ))}
+            {models.length === 0 && <div className="account-model-empty">暂无可用模型，管理员配置渠道后将在此展示</div>}
           </div>
         </section>
       </section>
@@ -3271,6 +3280,7 @@ function ChannelsView({
   const [upstreamApiKey, setUpstreamApiKey] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   function applyTemplate(nextProvider: string) {
     const template = channelTemplateFor(nextProvider);
@@ -3358,9 +3368,21 @@ function ChannelsView({
             <div className="channel-form-wide channel-model-field">
               <div className="field-label-row">
                 <span>模型</span>
-                <small>来源：模板，可手动修改；保存后可从上游拉取校准</small>
+                <small>可手动填写，或从上游拉取后多选</small>
               </div>
-              <textarea value={models} onChange={(event) => setModels(event.target.value)} placeholder="多个模型用逗号分隔，也可以保存后拉取上游模型" />
+              <textarea value={models} onChange={(event) => setModels(event.target.value)} placeholder="多个模型用逗号分隔，或点『获取模型』从上游拉取" />
+              <div className="channel-model-actions">
+                <button type="button" className="secondary-button compact-button" onClick={() => {
+                  if (provider !== "codex" && !baseUrl.trim()) {
+                    setMessage("请先填写 Base URL 再获取模型");
+                    return;
+                  }
+                  setMessage("");
+                  setPickerOpen(true);
+                }}>
+                  获取模型
+                </button>
+              </div>
             </div>
           </div>
           <div className="channel-card-actions">
@@ -3369,6 +3391,21 @@ function ChannelsView({
             <button className="primary-button" type="submit" disabled={busy}>{busy ? "创建中" : "创建渠道"}</button>
           </div>
         </form>
+      )}
+      {creating && pickerOpen && (
+        <ModelPickerModal
+          subtitle={`${name.trim() || channelTemplateFor(provider).name} · 勾选需要接入的模型`}
+          current={modelTextToList(models)}
+          loadModels={async () => {
+            const data = await fetchJson<{ models?: string[] }>("/api/channel-model-preview", {
+              method: "POST",
+              body: JSON.stringify({ provider, baseUrl: baseUrl.trim(), upstreamApiKey })
+            });
+            return arrayOf(data.models);
+          }}
+          onConfirm={async (selectedModels) => { setModels(selectedModels.join(", ")); }}
+          onClose={() => setPickerOpen(false)}
+        />
       )}
       <div className="channels-stack">
         {channels.map((channel) => (
@@ -3687,9 +3724,15 @@ function ChannelEditor({
     </details>
     {pickerOpen && (
       <ModelPickerModal
-        channelId={channel.id}
-        channelName={channel.name}
+        subtitle={`${channel.name} · 勾选需要接入的模型`}
         current={models.split(",").map((model) => model.trim()).filter(Boolean)}
+        loadModels={async () => {
+          const data = await fetchJson<{ models?: string[] }>(`/api/channels/${channel.id}/upstream-models`, {
+            method: "POST",
+            body: JSON.stringify({})
+          });
+          return arrayOf(data.models);
+        }}
         onConfirm={async (selectedModels) => { await onSyncModels(channel.id, selectedModels); }}
         onClose={() => setPickerOpen(false)}
       />
@@ -3699,15 +3742,15 @@ function ChannelEditor({
 }
 
 function ModelPickerModal({
-  channelId,
-  channelName,
+  subtitle,
   current,
+  loadModels,
   onConfirm,
   onClose
 }: {
-  channelId: string;
-  channelName: string;
+  subtitle: string;
   current: string[];
+  loadModels: () => Promise<string[]>;
   onConfirm: (models: string[]) => Promise<void>;
   onClose: () => void;
 }) {
@@ -3724,13 +3767,10 @@ function ModelPickerModal({
       setLoading(true);
       setError("");
       try {
-        const data = await fetchJson<{ models?: string[] }>(`/api/channels/${channelId}/upstream-models`, {
-          method: "POST",
-          body: JSON.stringify({})
-        });
+        const list = await loadModels();
         if (cancelled) return;
         const seen = new Set<string>();
-        const unique = arrayOf(data.models).map((model) => model.trim()).filter((model) => {
+        const unique = arrayOf(list).map((model) => model.trim()).filter((model) => {
           if (!model) return false;
           const key = model.toLowerCase();
           if (seen.has(key)) return false;
@@ -3749,9 +3789,9 @@ function ModelPickerModal({
     return () => {
       cancelled = true;
     };
-    // Fetch once per open; `current` is only used to seed the initial checkboxes.
+    // Load once when the dialog opens; current/loadModels only seed initial state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channelId]);
+  }, []);
 
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = normalizedQuery ? upstream.filter((model) => model.toLowerCase().includes(normalizedQuery)) : upstream;
@@ -3804,7 +3844,7 @@ function ModelPickerModal({
         <div className="modal-head">
           <div>
             <strong>选择上游模型</strong>
-            <span>{channelName} · 勾选需要接入的模型</span>
+            <span>{subtitle}</span>
           </div>
           <button type="button" className="icon-button" onClick={onClose}>×</button>
         </div>
