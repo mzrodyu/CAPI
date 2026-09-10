@@ -3368,11 +3368,7 @@ function ChannelsView({
             <div className="channel-form-wide channel-model-field">
               <div className="field-label-row">
                 <span>模型</span>
-                <small>可手动填写，或从上游拉取后多选</small>
-              </div>
-              <textarea value={models} onChange={(event) => setModels(event.target.value)} placeholder="多个模型用逗号分隔，或点『获取模型』从上游拉取" />
-              <div className="channel-model-actions">
-                <button type="button" className="secondary-button compact-button" onClick={() => {
+                <button type="button" className="model-pull-button" onClick={() => {
                   if (provider !== "codex" && !baseUrl.trim()) {
                     setMessage("请先填写 Base URL 再获取模型");
                     return;
@@ -3380,9 +3376,10 @@ function ChannelsView({
                   setMessage("");
                   setPickerOpen(true);
                 }}>
-                  获取模型
+                  从上游获取模型
                 </button>
               </div>
+              <textarea value={models} onChange={(event) => setModels(event.target.value)} placeholder="多个模型用逗号分隔，或点上方『从上游获取模型』拉取后多选" />
             </div>
           </div>
           <div className="channel-card-actions">
