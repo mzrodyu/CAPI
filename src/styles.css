@@ -997,7 +997,7 @@ h3 {
 
 .bulk-action-bar {
   display: grid;
-  grid-template-columns: auto 100px minmax(160px, 1fr) auto auto auto;
+  grid-template-columns: auto 100px minmax(160px, 1fr) auto auto auto minmax(130px, auto) auto;
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
@@ -1005,6 +1005,49 @@ h3 {
   background: color-mix(in srgb, var(--blue) 8%, var(--surface-solid));
   border: 1px solid color-mix(in srgb, var(--blue) 25%, var(--hairline));
   border-radius: 12px;
+}
+
+.bulk-group-select {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--surface-solid);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  outline: none;
+}
+
+.bulk-group-select:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+}
+
+.app-shell[data-theme="dark"] .bulk-group-select {
+  background: rgba(118, 118, 128, 0.12);
+  border-color: transparent;
+}
+
+.auth-default-balance select {
+  min-width: 0;
+  width: 180px;
+  height: 38px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--surface-solid);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  outline: none;
+}
+
+.auth-default-balance select:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+}
+
+.app-shell[data-theme="dark"] .auth-default-balance select {
+  background: rgba(118, 118, 128, 0.12);
+  border-color: transparent;
 }
 
 .bulk-action-bar input,
@@ -4171,6 +4214,11 @@ button.table-row:hover {
 
   .bulk-action-bar {
     grid-template-columns: auto 100px minmax(160px, 1fr);
+  }
+
+  .bulk-group-select,
+  .auth-default-balance select {
+    width: 100%;
   }
 
   .channel-form-wide {

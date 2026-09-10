@@ -279,6 +279,7 @@ type AuthSettings = {
   registrationEnabled: boolean;
   registrationMode: RegistrationMode;
   defaultBalance: number;
+  defaultGroupId: string;
 };
 
 type MaintenanceSettings = {
@@ -878,7 +879,7 @@ function App() {
 
   async function bulkUpdateUsers(
     userIds: string[],
-    action: "set_status" | "set_role" | "adjust_balance",
+    action: "set_status" | "set_role" | "adjust_balance" | "set_group",
     options: { value?: string; amount?: number; reason?: string } = {}
   ) {
     const data = await fetchJson<{ users: User[]; updated: number }>("/api/users/bulk", {
@@ -1332,7 +1333,7 @@ function App() {
         {active === "drawing" && <DrawingView channels={channels} onCreate={createChannel} onImport={importOpenAIAccounts} onCheckAccounts={checkOpenAIAccounts} onDeduplicateAccounts={deduplicateOpenAIAccounts} onDeleteAccount={deleteOpenAIAccount} onUpdate={updateChannel} onStartOAuth={startOpenAIOAuth} onCompleteOAuth={completeOpenAIOAuth} />}
         {active === "channels" && <ChannelsView channels={channels} groups={groups} onUpdate={updateChannel} onCreate={createChannel} onImport={importOpenAIAccounts} onDelete={deleteChannel} onSyncModels={syncChannelModels} onCheck={checkChannel} />}
         {active === "logs" && <LogsView logs={logs} onCopy={copyAndToast} />}
-        {active === "settings" && <SettingsView models={models} channels={channels} />}
+        {active === "settings" && <SettingsView models={models} channels={channels} groups={groups} />}
       </main>
 
       {createdKeySecret && (
@@ -2015,7 +2016,7 @@ function UsersView({
   onUpdate: (id: string, patch: Partial<User>) => void;
   onBulkUpdate: (
     ids: string[],
-    action: "set_status" | "set_role" | "adjust_balance",
+    action: "set_status" | "set_role" | "adjust_balance" | "set_group",
     options?: { value?: string; amount?: number; reason?: string }
   ) => Promise<void>;
   onCreateKey: (id: string) => void;
@@ -2028,6 +2029,7 @@ function UsersView({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAmount, setBulkAmount] = useState("10");
   const [bulkReason, setBulkReason] = useState("");
+  const [bulkGroupId, setBulkGroupId] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
   const [balanceAmount, setBalanceAmount] = useState("10");
   const [balanceReason, setBalanceReason] = useState("");
@@ -2074,7 +2076,7 @@ function UsersView({
   }
 
   async function runBulk(
-    action: "set_status" | "adjust_balance",
+    action: "set_status" | "adjust_balance" | "set_group",
     options: { value?: string; amount?: number; reason?: string }
   ) {
     if (selectedIds.size === 0) return;
@@ -2178,6 +2180,26 @@ function UsersView({
             </button>
             <button type="button" className="danger-button" disabled={bulkBusy} onClick={() => runBulk("set_status", { value: "disabled" })}>
               禁用
+            </button>
+            <select
+              className="bulk-group-select"
+              value={bulkGroupId}
+              disabled={bulkBusy}
+              aria-label="批量设置分组"
+              onChange={(event) => setBulkGroupId(event.target.value)}
+            >
+              <option value="">未分组</option>
+              {groups.map((group) => (
+                <option key={group.id} value={group.id}>{group.name}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={bulkBusy}
+              onClick={() => runBulk("set_group", { value: bulkGroupId })}
+            >
+              设为分组
             </button>
           </div>
         )}
@@ -4199,11 +4221,12 @@ function LogDetail({ log, loading, onCopy }: { log: RequestLog | null; loading: 
   );
 }
 
-function SettingsView({ models, channels }: { models: ModelItem[]; channels: Channel[] }) {
+function SettingsView({ models, channels, groups }: { models: ModelItem[]; channels: Channel[]; groups: UserGroup[] }) {
   const [discord, setDiscord] = useState<DiscordSettings | null>(null);
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean | null>(null);
   const [registrationMode, setRegistrationMode] = useState<RegistrationMode>("username");
   const [defaultBalance, setDefaultBalance] = useState("0");
+  const [defaultGroupId, setDefaultGroupId] = useState("");
   const [checkInSettings, setCheckInSettings] = useState<CheckInSettings>({
     enabled: true,
     minReward: 0.1,
@@ -4256,6 +4279,7 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
         setRegistrationEnabled(authData.auth.registrationEnabled);
         setRegistrationMode(normalizeRegistrationMode(authData.auth.registrationMode));
         setDefaultBalance(String(authData.auth.defaultBalance || 0));
+        setDefaultGroupId(authData.auth.defaultGroupId || "");
         setCheckInSettings(checkInData.checkIn);
         setAccount(accountData.account);
         setAccountUsername(accountData.account?.username || "");
@@ -4268,16 +4292,27 @@ function SettingsView({ models, channels }: { models: ModelItem[]; channels: Cha
       .catch(() => setMessage("设置加载失败"));
   }, []);
 
-  async function saveAuthSettings(nextEnabled = registrationEnabled, nextMode = registrationMode, nextDefaultBalance = Number(defaultBalance)) {
+  async function saveAuthSettings(
+    nextEnabled = registrationEnabled,
+    nextMode = registrationMode,
+    nextDefaultBalance = Number(defaultBalance),
+    nextDefaultGroupId = defaultGroupId
+  ) {
     if (nextEnabled === null) return;
     try {
       const data = await fetchJson<{ auth: AuthSettings }>("/api/settings/auth", {
         method: "PATCH",
-        body: JSON.stringify({ registrationEnabled: nextEnabled, registrationMode: nextMode, defaultBalance: nextDefaultBalance })
+        body: JSON.stringify({
+          registrationEnabled: nextEnabled,
+          registrationMode: nextMode,
+          defaultBalance: nextDefaultBalance,
+          defaultGroupId: nextDefaultGroupId
+        })
       });
       setRegistrationEnabled(data.auth.registrationEnabled);
       setRegistrationMode(normalizeRegistrationMode(data.auth.registrationMode));
       setDefaultBalance(String(data.auth.defaultBalance || 0));
+      setDefaultGroupId(data.auth.defaultGroupId || "");
       setMessage(data.auth.registrationEnabled ? "注册设置已保存" : "已关闭用户注册");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "注册设置保存失败");
@@ -4663,6 +4698,32 @@ response = client.chat.completions.create(
                 type="button"
                 className="secondary-button"
                 onClick={() => saveAuthSettings(registrationEnabled, registrationMode, Number(defaultBalance))}
+              >
+                保存
+              </button>
+            </div>
+          </div>
+          <div className="setting">
+            <span>
+              默认注册分组
+              <small>新注册用户自动归入该分组，决定他们能用哪些渠道</small>
+            </span>
+            <div className="setting-value auth-default-balance">
+              <select
+                value={defaultGroupId}
+                onChange={(event) => setDefaultGroupId(event.target.value)}
+                aria-label="默认注册分组"
+              >
+                {groups.map((group) => (
+                  <option key={group.id} value={group.id}>{group.name}</option>
+                ))}
+                {groups.length === 0 && <option value="">暂无分组</option>}
+              </select>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={groups.length === 0}
+                onClick={() => saveAuthSettings(registrationEnabled, registrationMode, Number(defaultBalance), defaultGroupId)}
               >
                 保存
               </button>
