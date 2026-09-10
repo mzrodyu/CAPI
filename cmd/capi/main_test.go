@@ -5044,3 +5044,158 @@ func TestDefaultRegistrationGroupAppliesToNewUsers(t *testing.T) {
 		t.Fatalf("new user group = %q, want %q", registered.GroupID, groupID)
 	}
 }
+
+func TestIdempotencyCacheExpires(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, _ := testServerRouter(t)
+
+	previousTTL := idempotencyCacheTTL
+	idempotencyCacheTTL = time.Hour
+	t.Cleanup(func() { idempotencyCacheTTL = previousTTL })
+
+	server.mu.Lock()
+	server.idempotencyCache["fresh"] = CachedResponse{Status: http.StatusOK, Body: gin.H{"ok": true}, CreatedAt: now()}
+	server.idempotencyCache["stale"] = CachedResponse{
+		Status:    http.StatusOK,
+		Body:      gin.H{"ok": true},
+		CreatedAt: time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano),
+	}
+	server.idempotencyCache["unparsable"] = CachedResponse{Status: http.StatusOK, Body: gin.H{"ok": true}, CreatedAt: "not-a-timestamp"}
+
+	if _, ok := server.cachedResponseLocked("fresh"); !ok {
+		t.Fatal("a fresh idempotency entry was rejected")
+	}
+	if _, ok := server.cachedResponseLocked("stale"); ok {
+		t.Fatal("an expired idempotency entry was replayed")
+	}
+	if _, ok := server.cachedResponseLocked("unparsable"); ok {
+		t.Fatal("an entry with an unparsable timestamp was replayed")
+	}
+
+	// Expired entries must be evicted, not merely skipped.
+	if _, exists := server.idempotencyCache["stale"]; exists {
+		t.Fatal("expired entry was not evicted")
+	}
+	if _, exists := server.idempotencyCache["unparsable"]; exists {
+		t.Fatal("unparsable entry was not evicted")
+	}
+
+	server.idempotencyCache["stale2"] = CachedResponse{
+		Status:    http.StatusOK,
+		Body:      gin.H{"ok": true},
+		CreatedAt: time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339Nano),
+	}
+	server.pruneExpiredIdempotencyLocked()
+	if len(server.idempotencyCache) != 1 {
+		t.Fatalf("cache after prune = %#v, want only the fresh entry", server.idempotencyCache)
+	}
+	server.mu.Unlock()
+}
+
+func TestRateLimitBucketsAreSweptPerMinute(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, _ := testServerRouter(t)
+
+	minute := time.Now().Unix() / 60
+	server.mu.Lock()
+	server.rateLimitBuckets[fmt.Sprintf("key_a:%d", minute)] = 3
+	server.rateLimitBuckets[fmt.Sprintf("key_b:%d", minute-5)] = 9
+	server.rateLimitBuckets[fmt.Sprintf("key_c:%d", minute-1)] = 1
+
+	key := &APIKey{ID: "key_a", RateLimitPerMinute: 10}
+	if !server.checkRateLimitLocked(key) {
+		t.Fatal("request under the limit was rejected")
+	}
+
+	if len(server.rateLimitBuckets) != 1 {
+		t.Fatalf("buckets after sweep = %#v, want only the current minute", server.rateLimitBuckets)
+	}
+	if _, ok := server.rateLimitBuckets[fmt.Sprintf("key_a:%d", minute)]; !ok {
+		t.Fatalf("the current minute bucket was dropped: %#v", server.rateLimitBuckets)
+	}
+	if server.rateLimitBuckets[fmt.Sprintf("key_a:%d", minute)] != 4 {
+		t.Fatalf("current bucket count = %d, want the incremented value", server.rateLimitBuckets[fmt.Sprintf("key_a:%d", minute)])
+	}
+	server.mu.Unlock()
+}
+
+func TestOpenAIModelListHidesModelsTheGroupCannotReach(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, router := testServerRouter(t)
+	seedGatewayFixtures(server)
+
+	auth := map[string]string{"Authorization": "Bearer cat_fixture_live_secret"}
+	before := perform(router, http.MethodGet, "/v1/models", "", auth)
+	if before.Code != http.StatusOK || !bytes.Contains(before.Body.Bytes(), []byte(`"id":"deepseek-v4"`)) {
+		t.Fatalf("baseline model list = %d body = %s", before.Code, before.Body.String())
+	}
+
+	created := perform(router, http.MethodPost, "/api/groups", `{"name":"gated"}`, nil)
+	var groupPayload struct {
+		Group UserGroup `json:"group"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &groupPayload); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	// chn_1002 is the only channel serving deepseek-v4; gate it behind a group
+	// the calling user is not in.
+	restricted := perform(router, http.MethodPatch, "/api/channels/chn_1002", `{"allowedGroupIds":["`+groupPayload.Group.ID+`"]}`, nil)
+	if restricted.Code != http.StatusOK {
+		t.Fatalf("restrict channel status = %d body = %s", restricted.Code, restricted.Body.String())
+	}
+
+	after := perform(router, http.MethodGet, "/v1/models", "", auth)
+	if after.Code != http.StatusOK {
+		t.Fatalf("model list status = %d body = %s", after.Code, after.Body.String())
+	}
+	if bytes.Contains(after.Body.Bytes(), []byte(`"id":"deepseek-v4"`)) {
+		t.Fatalf("a model the group cannot route to is still advertised: %s", after.Body.String())
+	}
+	if !bytes.Contains(after.Body.Bytes(), []byte(`"id":"gpt-5.5"`)) {
+		t.Fatalf("a model on an unrestricted channel disappeared: %s", after.Body.String())
+	}
+}
+
+func TestPublicCatalogFiltersBySessionGroup(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, router := testServerRouter(t)
+	seedGatewayFixtures(server)
+
+	// An anonymous visitor sees the whole catalog.
+	anonymous := perform(router, http.MethodGet, "/api/catalog/models", "", nil)
+	if anonymous.Code != http.StatusOK || !bytes.Contains(anonymous.Body.Bytes(), []byte(`"id":"deepseek-v4"`)) {
+		t.Fatalf("anonymous catalog = %d body = %s", anonymous.Code, anonymous.Body.String())
+	}
+
+	server.mu.Lock()
+	server.state.Users = append(server.state.Users, User{ID: "usr_cat", Name: "Catalog User", Role: "user", Status: "active"})
+	account := Account{ID: "acct_cat", UserID: "usr_cat", Username: "catalog", Role: "user", Status: "active"}
+	server.state.Accounts = append(server.state.Accounts, account)
+	server.mu.Unlock()
+
+	created := perform(router, http.MethodPost, "/api/groups", `{"name":"catalog_gated"}`, nil)
+	var groupPayload struct {
+		Group UserGroup `json:"group"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &groupPayload); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	restricted := perform(router, http.MethodPatch, "/api/channels/chn_1002", `{"allowedGroupIds":["`+groupPayload.Group.ID+`"]}`, nil)
+	if restricted.Code != http.StatusOK {
+		t.Fatalf("restrict channel status = %d body = %s", restricted.Code, restricted.Body.String())
+	}
+
+	session := server.createAccountSession(account, "Catalog User", "password")
+	headers := map[string]string{"Cookie": "capi_session=" + session.ID}
+
+	signedIn := perform(router, http.MethodGet, "/api/catalog/models", "", headers)
+	if signedIn.Code != http.StatusOK {
+		t.Fatalf("signed-in catalog status = %d body = %s", signedIn.Code, signedIn.Body.String())
+	}
+	if bytes.Contains(signedIn.Body.Bytes(), []byte(`"id":"deepseek-v4"`)) {
+		t.Fatalf("catalog advertised an unreachable model: %s", signedIn.Body.String())
+	}
+	if !bytes.Contains(signedIn.Body.Bytes(), []byte(`"id":"gpt-5.5"`)) {
+		t.Fatalf("catalog dropped a reachable model: %s", signedIn.Body.String())
+	}
+}
