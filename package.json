@@ -7,7 +7,8 @@
     "dev": "concurrently \"npm:dev:web\" \"npm:dev:api\"",
     "dev:web": "vite --host 0.0.0.0",
     "dev:api": "go run ./cmd/capi",
-    "build": "tsc -b && vite build",
+    "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean:dist && tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "go run ./cmd/capi"
   },
