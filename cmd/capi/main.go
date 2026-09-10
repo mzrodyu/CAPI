@@ -67,6 +67,12 @@ var (
 
 var imageJSONKeepaliveInterval = 8 * time.Second
 
+// idempotencyCacheTTL bounds how long a client-supplied Idempotency-Key replays
+// its original response. Without an expiry a key could be reused indefinitely
+// and would return a stale body, and the cache (which holds whole response
+// bodies) would grow without bound.
+var idempotencyCacheTTL = 24 * time.Hour
+
 type AppState struct {
 	Users       []User          `json:"users"`
 	Groups      []UserGroup     `json:"groups"`
@@ -420,6 +426,7 @@ type Server struct {
 	sessionTTL             time.Duration
 	accountHealthInterval  time.Duration
 	rateLimitBuckets       map[string]int
+	rateLimitMinute        int64
 	idempotencyCache       map[string]CachedResponse
 	authStates             map[string]time.Time
 	sessions               map[string]Session
@@ -2225,13 +2232,33 @@ func (s *Server) updateAccountProfile(c *gin.Context) {
 }
 
 func (s *Server) publicModelCatalog(c *gin.Context) {
+	// Resolve the session before taking the lock: sessionFromRequest locks s.mu
+	// itself, and s.mu is not reentrant.
+	session, hasSession := s.sessionFromRequest(c)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Signed-in callers only see models their group can actually reach, so the
+	// catalog cannot advertise something that would fail with
+	// model_not_available at call time. Anonymous visitors see the full catalog.
+	groupID := ""
+	filterByGroup := false
+	if hasSession {
+		if user := s.findUser(session.UserID); user != nil {
+			groupID = user.GroupID
+			filterByGroup = true
+		}
+	}
+
 	models := []Model{}
 	for _, model := range s.state.Models {
-		if model.Status == "available" {
-			models = append(models, model)
+		if model.Status != "available" {
+			continue
 		}
+		if filterByGroup && !s.channelServesModelForGroupLocked(model.ID, groupID) {
+			continue
+		}
+		models = append(models, model)
 	}
 	c.JSON(http.StatusOK, gin.H{"models": models})
 }
@@ -4142,9 +4169,20 @@ func (s *Server) openAIModels(c *gin.Context) {
 	}
 	data := []gin.H{}
 	for _, model := range s.state.Models {
-		if model.Status == "available" && (auth == nil || apiKeyAllowsModel(auth.Key, model.ID)) {
-			data = append(data, toOpenAIModel(model))
+		if model.Status != "available" {
+			continue
 		}
+		if auth != nil {
+			if !apiKeyAllowsModel(auth.Key, model.ID) {
+				continue
+			}
+			// Only advertise models the caller's group can actually route to;
+			// otherwise the listing promises a model that fails at call time.
+			if !s.channelServesModelForGroupLocked(model.ID, auth.User.GroupID) {
+				continue
+			}
+		}
+		data = append(data, toOpenAIModel(model))
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
 }
@@ -4526,7 +4564,7 @@ func (s *Server) chatCompletions(c *gin.Context) {
 
 	s.mu.Lock()
 	if idempotencyKey != "" {
-		if cached, ok := s.idempotencyCache[idempotencyKey]; ok {
+		if cached, ok := s.cachedResponseLocked(idempotencyKey); ok {
 			s.mu.Unlock()
 			c.Header("x-capi-cache", "idempotency")
 			c.JSON(cached.Status, cached.Body)
@@ -4550,7 +4588,7 @@ func (s *Server) imageGenerations(c *gin.Context) {
 
 	s.mu.Lock()
 	if idempotencyKey != "" {
-		if cached, ok := s.idempotencyCache[idempotencyKey]; ok {
+		if cached, ok := s.cachedResponseLocked(idempotencyKey); ok {
 			s.mu.Unlock()
 			c.JSON(cached.Status, cached.Body)
 			return
@@ -4572,7 +4610,7 @@ func (s *Server) imageEdits(c *gin.Context) {
 
 	s.mu.Lock()
 	if idempotencyKey != "" {
-		if cached, ok := s.idempotencyCache[idempotencyKey]; ok {
+		if cached, ok := s.cachedResponseLocked(idempotencyKey); ok {
 			s.mu.Unlock()
 			c.JSON(cached.Status, cached.Body)
 			return
@@ -9338,6 +9376,27 @@ func channelAllowsUserGroup(channel Channel, groupID string) bool {
 	return containsString(channel.AllowedGroupIDs, strings.TrimSpace(groupID))
 }
 
+// channelServesModelForGroupLocked reports whether any enabled channel that is
+// visible to the group actually serves the model. It answers the same question
+// as channelCandidatesLocked but without expanding key pools or decrypting
+// secrets, so it is cheap enough to run across an entire model catalog.
+// Callers must hold s.mu.
+func (s *Server) channelServesModelForGroupLocked(modelID, groupID string) bool {
+	for i := range s.state.Channels {
+		channel := &s.state.Channels[i]
+		if channel.Status == "disabled" {
+			continue
+		}
+		if !channelAllowsUserGroup(*channel, groupID) {
+			continue
+		}
+		if containsString(channel.Models, modelID) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) findAPIKeyByID(id string) *APIKey {
 	for i := range s.state.APIKeys {
 		if s.state.APIKeys[i].ID == id {
@@ -9952,8 +10011,33 @@ func isTokenInvalidatedProviderError(providerErr *ProviderError) bool {
 		strings.Contains(text, "try signing in again")
 }
 
+// cachedResponseLocked returns a cached idempotent response that is still
+// within its TTL. Expired entries are dropped so a reused Idempotency-Key
+// cannot replay an indefinitely old body, and so the cache stays bounded.
+// Callers must hold s.mu.
+func (s *Server) cachedResponseLocked(key string) (CachedResponse, bool) {
+	entry, ok := s.idempotencyCache[key]
+	if !ok {
+		return CachedResponse{}, false
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, entry.CreatedAt)
+	if err != nil || time.Since(createdAt) > idempotencyCacheTTL {
+		delete(s.idempotencyCache, key)
+		return CachedResponse{}, false
+	}
+	return entry, true
+}
+
 func (s *Server) checkRateLimitLocked(key *APIKey) bool {
-	bucket := fmt.Sprintf("%s:%d", key.ID, time.Now().Unix()/60)
+	minute := time.Now().Unix() / 60
+	// Buckets are keyed per key per minute and would otherwise accumulate one
+	// entry per key per active minute for the lifetime of the process. Sweeping
+	// once per minute keeps the map bounded to the current window.
+	if minute != s.rateLimitMinute {
+		s.rateLimitMinute = minute
+		s.sweepRateLimitBucketsLocked(minute)
+	}
+	bucket := fmt.Sprintf("%s:%d", key.ID, minute)
 	current := s.rateLimitBuckets[bucket]
 	limit := s.requestLimitPerMinute
 	if key.RateLimitPerMinute > 0 {
@@ -9964,6 +10048,29 @@ func (s *Server) checkRateLimitLocked(key *APIKey) bool {
 	}
 	s.rateLimitBuckets[bucket] = current + 1
 	return true
+}
+
+// sweepRateLimitBucketsLocked drops every bucket that does not belong to the
+// given minute. Callers must hold s.mu.
+func (s *Server) sweepRateLimitBucketsLocked(minute int64) {
+	current := fmt.Sprintf(":%d", minute)
+	for bucket := range s.rateLimitBuckets {
+		if !strings.HasSuffix(bucket, current) {
+			delete(s.rateLimitBuckets, bucket)
+		}
+	}
+}
+
+// pruneExpiredIdempotencyLocked evicts idempotency entries past their TTL.
+// Unlike the operator-visible history this is in-memory only, so callers must
+// not treat a change here as a reason to persist state. Callers must hold s.mu.
+func (s *Server) pruneExpiredIdempotencyLocked() {
+	for key, entry := range s.idempotencyCache {
+		createdAt, err := time.Parse(time.RFC3339Nano, entry.CreatedAt)
+		if err != nil || time.Since(createdAt) > idempotencyCacheTTL {
+			delete(s.idempotencyCache, key)
+		}
+	}
 }
 
 func (s *Server) loadState() {
@@ -10309,6 +10416,11 @@ func (s *Server) pruneOperationalHistoryLocked() bool {
 		s.state.QuotaLedger = append([]QuotaEntry{}, s.state.QuotaLedger[len(s.state.QuotaLedger)-settings.MaxQuotaEntries:]...)
 		changed = true
 	}
+
+	// These caches are in-memory only, so evicting from them must not mark the
+	// state as changed and trigger a write.
+	s.pruneExpiredIdempotencyLocked()
+	s.sweepRateLimitBucketsLocked(time.Now().Unix() / 60)
 	return changed
 }
 
