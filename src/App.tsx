@@ -24,6 +24,14 @@ type User = {
   createdAt: string;
   lastLoginAt: string;
   note: string;
+  groupId: string;
+};
+
+type UserGroup = {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
 };
 
 type ApiKey = {
@@ -56,6 +64,7 @@ type Channel = {
   priority: number;
   weight: number;
   models: string[];
+  allowedGroupIds: string[];
   inputPricePer1K: number;
   outputPricePer1K: number;
   pricingConfigured: boolean;
@@ -318,7 +327,7 @@ function mergeUniqueStrings(values: string[]) {
 
 function normalizeChannel(channel: Channel): Channel {
   const streamMode = streamModeOptions.some((option) => option.value === channel.streamMode) ? channel.streamMode : "auto";
-  return { ...channel, streamMode, models: arrayOf(channel.models), openaiAccounts: arrayOf(channel.openaiAccounts), kiroAccounts: arrayOf(channel.kiroAccounts) };
+  return { ...channel, streamMode, models: arrayOf(channel.models), allowedGroupIds: arrayOf(channel.allowedGroupIds), openaiAccounts: arrayOf(channel.openaiAccounts), kiroAccounts: arrayOf(channel.kiroAccounts) };
 }
 
 function normalizeModel(model: ModelItem): ModelItem {
@@ -424,6 +433,7 @@ async function fetchFormJson<T>(url: string, body: FormData): Promise<T> {
 const navItems = [
   { id: "overview", label: "概览", icon: "home" },
   { id: "users", label: "用户", icon: "users" },
+  { id: "groups", label: "分组", icon: "users" },
   { id: "keys", label: "密钥", icon: "key" },
   { id: "models", label: "模型", icon: "models" },
   { id: "drawing", label: "绘图", icon: "image" },
@@ -803,6 +813,7 @@ function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [groups, setGroups] = useState<UserGroup[]>([]);
   const [models, setModels] = useState<ModelItem[]>([]);
   const [logs, setLogs] = useState<RequestLog[]>([]);
   const [query, setQuery] = useState("");
@@ -820,20 +831,23 @@ function App() {
 
   async function loadAll() {
     const timezoneOffset = new Date().getTimezoneOffset();
-    const [overviewData, usersData, channelsData, modelsData, logsData] = await Promise.all([
+    const [overviewData, usersData, channelsData, modelsData, logsData, groupsData] = await Promise.all([
       fetchJson<Overview>(`/api/overview?timezoneOffset=${timezoneOffset}`),
       fetchJson<{ users: User[] }>("/api/users"),
       fetchJson<{ channels: Channel[] }>("/api/channels"),
       fetchJson<{ models: ModelItem[] }>("/api/models"),
-      fetchJson<{ logs: RequestLog[] }>("/api/logs")
+      fetchJson<{ logs: RequestLog[] }>("/api/logs"),
+      fetchJson<{ groups: UserGroup[] }>("/api/groups")
     ]);
     const nextUsers = arrayOf(usersData.users);
     const nextChannels = arrayOf(channelsData.channels).map(normalizeChannel);
     const nextModels = arrayOf(modelsData.models).map(normalizeModel);
     const nextLogs = arrayOf(logsData.logs);
+    const nextGroups = arrayOf(groupsData.groups);
     setOverview(overviewData);
     setUsers(nextUsers);
     setChannels(nextChannels);
+    setGroups(nextGroups);
     setModels(nextModels);
     setLogs(nextLogs);
     setSelectedUserId((current) => {
@@ -936,6 +950,36 @@ function App() {
     setChannels((current) => current.filter((item) => item.id !== id));
     removeModelsFromCatalog(data.removedModels);
     setToast("渠道已删除");
+    window.setTimeout(() => setToast(""), 1800);
+  }
+
+  async function createGroup(payload: { name: string; description: string }) {
+    const data = await fetchJson<{ group: UserGroup }>("/api/groups", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    setGroups((current) => [...current, data.group]);
+    setToast("分组已创建");
+    window.setTimeout(() => setToast(""), 1800);
+  }
+
+  async function updateGroup(id: string, patch: Partial<UserGroup>) {
+    const data = await fetchJson<{ group: UserGroup }>(`/api/groups/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    });
+    setGroups((current) => current.map((group) => (group.id === id ? data.group : group)));
+    setToast("分组已更新");
+    window.setTimeout(() => setToast(""), 1800);
+  }
+
+  async function deleteGroup(id: string) {
+    const group = groups.find((item) => item.id === id);
+    if (!window.confirm(`删除分组「${group?.name || id}」？删除后渠道的可见范围会移除该分组。`)) return;
+    await fetchJson<{ deleted: boolean }>(`/api/groups/${id}`, { method: "DELETE" });
+    setGroups((current) => current.filter((item) => item.id !== id));
+    setChannels((current) => current.map((channel) => ({ ...channel, allowedGroupIds: channel.allowedGroupIds.filter((groupId) => groupId !== id) })));
+    setToast("分组已删除");
     window.setTimeout(() => setToast(""), 1800);
   }
 
@@ -1274,6 +1318,7 @@ function App() {
             onUpdate={updateUser}
             onBulkUpdate={bulkUpdateUsers}
             onCreateKey={createAPIKeyForUser}
+            groups={groups}
             onOpenRegistration={() => {
               setActive("settings");
               setToast("在账号与注册里开放注册，用户即可自助创建账号");
@@ -1281,10 +1326,11 @@ function App() {
             }}
           />
         )}
+        {active === "groups" && <GroupsView groups={groups} onCreate={createGroup} onUpdate={updateGroup} onDelete={deleteGroup} />}
         {active === "keys" && <KeysView selectedUser={selectedUser} onCreateKey={createAPIKeyForUser} onUpdateKey={updateAPIKey} onDeleteKey={deleteAPIKey} />}
         {active === "models" && <ModelsView models={models} onCopy={copyAndToast} onCreate={createModel} onUpdate={updateModel} onDelete={deleteModel} />}
         {active === "drawing" && <DrawingView channels={channels} onCreate={createChannel} onImport={importOpenAIAccounts} onCheckAccounts={checkOpenAIAccounts} onDeduplicateAccounts={deduplicateOpenAIAccounts} onDeleteAccount={deleteOpenAIAccount} onUpdate={updateChannel} onStartOAuth={startOpenAIOAuth} onCompleteOAuth={completeOpenAIOAuth} />}
-        {active === "channels" && <ChannelsView channels={channels} onUpdate={updateChannel} onCreate={createChannel} onImport={importOpenAIAccounts} onDelete={deleteChannel} onSyncModels={syncChannelModels} onCheck={checkChannel} />}
+        {active === "channels" && <ChannelsView channels={channels} groups={groups} onUpdate={updateChannel} onCreate={createChannel} onImport={importOpenAIAccounts} onDelete={deleteChannel} onSyncModels={syncChannelModels} onCheck={checkChannel} />}
         {active === "logs" && <LogsView logs={logs} onCopy={copyAndToast} />}
         {active === "settings" && <SettingsView models={models} channels={channels} />}
       </main>
@@ -1607,6 +1653,17 @@ function AccountHome({
     }
   }
 
+  async function deleteKey(id: string) {
+    if (!window.confirm("删除这个 API Key？使用它的请求会立即失效。")) return;
+    try {
+      await fetchJson<{ deleted: boolean }>(`/api/account/api-keys/${id}`, { method: "DELETE" });
+      setData((current) => current ? { ...current, apiKeys: current.apiKeys.filter((key) => key.id !== id) } : current);
+      setMessage("密钥已删除");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除密钥失败");
+    }
+  }
+
   async function logout() {
     await fetchJson("/api/auth/logout", { method: "POST" });
     goHome();
@@ -1690,6 +1747,9 @@ function AccountHome({
                   <code>{key.prefix}…</code>
                 </div>
                 <Badge tone={key.status}>{statusLabel(key.status)}</Badge>
+                <button className="icon-button" aria-label={`删除 ${key.name}`} title="删除密钥" onClick={() => deleteKey(key.id)}>
+                  <Icon name="ban" />
+                </button>
               </div>
             ))}
             {arrayOf(data?.apiKeys).length === 0 && <div className="empty">还没有 API 密钥</div>}
@@ -1944,6 +2004,7 @@ function UsersView({
   onUpdate,
   onBulkUpdate,
   onCreateKey,
+  groups,
   onOpenRegistration
 }: {
   users: User[];
@@ -1958,6 +2019,7 @@ function UsersView({
     options?: { value?: string; amount?: number; reason?: string }
   ) => Promise<void>;
   onCreateKey: (id: string) => void;
+  groups: UserGroup[];
   onOpenRegistration: () => void;
 }) {
   const pageSize = 25;
@@ -2184,6 +2246,22 @@ function UsersView({
               <Setting label="总请求" value={String(selectedUser.user.totalRequests)} />
               <Setting label="最后登录" value={formatDate(selectedUser.user.lastLoginAt)} />
               <Setting label="API 调用" value={selectedUser.user.status === "disabled" ? "关闭" : "允许"} switchOn={selectedUser.user.status !== "disabled"} />
+            </div>
+
+            <div className="group-assign-row">
+              <label>
+                <span>所属分组</span>
+                <select
+                  value={selectedUser.user.groupId || ""}
+                  onChange={(event) => onUpdate(selectedUser.user.id, { groupId: event.target.value })}
+                >
+                  <option value="">未分组</option>
+                  {groups.map((group) => (
+                    <option key={group.id} value={group.id}>{group.name}</option>
+                  ))}
+                </select>
+              </label>
+              <small>分组决定该用户可路由到哪些渠道；未分组用户只能使用未限制分组的渠道。</small>
             </div>
 
             <div className="balance-adjuster">
@@ -3256,6 +3334,7 @@ function accountNeedsAttention(account: OpenAIAccount) {
 
 function ChannelsView({
   channels,
+  groups,
   onUpdate,
   onCreate,
   onImport,
@@ -3264,6 +3343,7 @@ function ChannelsView({
   onCheck
 }: {
   channels: Channel[];
+  groups: UserGroup[];
   onUpdate: (id: string, patch: ChannelPatch) => Promise<void>;
   onCreate: (channel: ChannelCreate) => Promise<void>;
   onImport: (channelId: string, file: File) => Promise<void>;
@@ -3406,7 +3486,7 @@ function ChannelsView({
       )}
       <div className="channels-stack">
         {channels.map((channel) => (
-          <ChannelEditor key={channel.id} channel={channel} onUpdate={onUpdate} onImport={onImport} onDelete={onDelete} onSyncModels={onSyncModels} onCheck={onCheck} />
+          <ChannelEditor key={channel.id} channel={channel} groups={groups} onUpdate={onUpdate} onImport={onImport} onDelete={onDelete} onSyncModels={onSyncModels} onCheck={onCheck} />
         ))}
         {channels.length === 0 && <Empty text="暂无渠道，先在后端添加渠道接口或导入配置" />}
       </div>
@@ -3416,6 +3496,7 @@ function ChannelsView({
 
 function ChannelEditor({
   channel,
+  groups,
   onUpdate,
   onImport,
   onDelete,
@@ -3423,6 +3504,7 @@ function ChannelEditor({
   onCheck
 }: {
   channel: Channel;
+  groups: UserGroup[];
   onUpdate: (id: string, patch: ChannelPatch) => Promise<void>;
   onImport: (channelId: string, file: File) => Promise<void>;
   onDelete: (id: string) => void;
@@ -3433,6 +3515,7 @@ function ChannelEditor({
   const [provider, setProvider] = useState(channel.provider);
   const [streamMode, setStreamMode] = useState<Channel["streamMode"]>(channel.streamMode || "auto");
   const [baseUrl, setBaseUrl] = useState(channel.baseUrl);
+  const [allowedGroupIds, setAllowedGroupIds] = useState<string[]>(arrayOf(channel.allowedGroupIds));
   const [models, setModels] = useState(arrayOf(channel.models).join(", "));
   const [modelSource, setModelSource] = useState<"saved" | "template" | "manual" | "synced">("saved");
   const [inputPrice, setInputPrice] = useState(String(channel.inputPricePer1K || 0));
@@ -3464,6 +3547,7 @@ function ChannelEditor({
     setProvider(channel.provider);
     setStreamMode(channel.streamMode || "auto");
     setBaseUrl(channel.baseUrl);
+    setAllowedGroupIds(arrayOf(channel.allowedGroupIds));
     setModels(arrayOf(channel.models).join(", "));
     setModelSource("saved");
     setInputPrice(String(channel.inputPricePer1K || 0));
@@ -3499,7 +3583,8 @@ function ChannelEditor({
       models: models
         .split(",")
         .map((model) => model.trim())
-        .filter(Boolean)
+        .filter(Boolean),
+      allowedGroupIds
     };
     Object.assign(patch, upstreamKeyFields(upstreamApiKey));
     return patch;
@@ -3693,6 +3778,34 @@ function ChannelEditor({
           <input type="number" min="0" step="0.0001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} />
         </label>
         <span className="channel-billing-note">定价可先留空；接入是否可用优先看渠道检测和模型同步结果。</span>
+      </div>
+
+      <div className="channel-group-field">
+        <div className="field-label-row">
+          <span>可见分组</span>
+          <small>{allowedGroupIds.length ? `已选择 ${allowedGroupIds.length} 个分组` : "全部用户可用"}</small>
+        </div>
+        {groups.length === 0 ? (
+          <p className="channel-group-empty">还没有用户分组。去「分组」页创建后，可在这里把渠道限制为只对特定分组开放。</p>
+        ) : (
+          <div className="channel-group-options">
+            {groups.map((group) => {
+              const selected = allowedGroupIds.includes(group.id);
+              return (
+                <button
+                  key={group.id}
+                  type="button"
+                  className={selected ? "selected" : ""}
+                  aria-pressed={selected}
+                  onClick={() => setAllowedGroupIds((current) => selected ? current.filter((id) => id !== group.id) : [...current, group.id])}
+                >
+                  <span>{group.name}</span>
+                  {group.description && <small>{group.description}</small>}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="channel-card-actions">
@@ -4808,6 +4921,128 @@ function Metric({ label, value }: { label: string; value: string | number }) {
     <div className="metric">
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function GroupsView({
+  groups,
+  onCreate,
+  onUpdate,
+  onDelete
+}: {
+  groups: UserGroup[];
+  onCreate: (payload: { name: string; description: string }) => Promise<void>;
+  onUpdate: (id: string, patch: Partial<UserGroup>) => Promise<void>;
+  onDelete: (id: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      await onCreate({ name: name.trim(), description: description.trim() });
+      setName("");
+      setDescription("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="models-page">
+      <Panel title="用户分组">
+        <form className="channel-create-form" onSubmit={submit}>
+          <div className="channel-form-grid">
+            <label>
+              <span>分组名称</span>
+              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 尊享用户 / 试用用户" />
+            </label>
+            <label>
+              <span>说明</span>
+              <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="可选" />
+            </label>
+          </div>
+          <div className="channel-card-actions">
+            <button className="primary-button" type="submit" disabled={busy || !name.trim()}>{busy ? "创建中" : "创建分组"}</button>
+          </div>
+        </form>
+        <p className="muted-inline">分组用于控制渠道对用户的可见范围：把用户归入分组，并在渠道上勾选「可见分组」即可限制访问。未分组的用户只能使用未限制分组的渠道。</p>
+      </Panel>
+      <Panel title="全部分组">
+        {groups.length === 0 ? (
+          <Empty text="还没有分组" />
+        ) : (
+          <div className="channels-stack">
+            {groups.map((group) => (
+              <GroupRow key={group.id} group={group} onUpdate={onUpdate} onDelete={onDelete} />
+            ))}
+          </div>
+        )}
+      </Panel>
+    </section>
+  );
+}
+
+function GroupRow({
+  group,
+  onUpdate,
+  onDelete
+}: {
+  group: UserGroup;
+  onUpdate: (id: string, patch: Partial<UserGroup>) => Promise<void>;
+  onDelete: (id: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(group.name);
+  const [description, setDescription] = useState(group.description);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await onUpdate(group.id, { name: name.trim(), description: description.trim() });
+      setEditing(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="channel-card">
+      <div className="channel-card-head">
+        <div>
+          {editing ? (
+            <div className="group-edit-fields">
+              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="分组名称" />
+              <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说明" />
+            </div>
+          ) : (
+            <>
+              <strong>{group.name}</strong>
+              {group.description && <span>{group.description}</span>}
+              <small>创建于 {formatDate(group.createdAt)}</small>
+            </>
+          )}
+        </div>
+        <div className="channel-card-head-actions">
+          {editing ? (
+            <>
+              <button className="primary-button compact-button" onClick={save} disabled={busy || !name.trim()}>{busy ? "保存中" : "保存"}</button>
+              <button className="secondary-button compact-button" onClick={() => { setName(group.name); setDescription(group.description); setEditing(false); }}>取消</button>
+            </>
+          ) : (
+            <>
+              <button className="secondary-button compact-button" onClick={() => setEditing(true)}>重命名</button>
+              <button className="danger-button compact-button" onClick={() => onDelete(group.id)}>删除</button>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

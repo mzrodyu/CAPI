@@ -6366,3 +6366,112 @@ input[type="radio"]:active {
   border-color: var(--glass-border);
   box-shadow: var(--glass-shadow);
 }
+
+/* User groups + channel visibility scoping */
+.group-assign-row {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 12px 14px;
+  background: var(--group);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+}
+
+.group-assign-row label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.group-assign-row select {
+  height: 38px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--surface-solid);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  outline: none;
+}
+
+.group-assign-row select:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+}
+
+.group-assign-row small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.channel-group-field {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--group);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+}
+
+.channel-group-empty {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.channel-group-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.channel-group-options button {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 12px;
+  color: var(--text);
+  text-align: left;
+  background: var(--surface-solid);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.channel-group-options button small {
+  color: var(--muted);
+}
+
+.channel-group-options button.selected {
+  border-color: color-mix(in srgb, var(--blue) 46%, var(--hairline));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 28%, transparent);
+}
+
+.app-shell[data-theme="dark"] .group-assign-row select,
+.app-shell[data-theme="dark"] .channel-group-options button,
+.app-shell[data-theme="dark"] .group-edit-fields input {
+  background: rgba(118, 118, 128, 0.12);
+  border-color: transparent;
+}
+
+.group-edit-fields {
+  display: grid;
+  gap: 8px;
+}
+
+.group-edit-fields input {
+  height: 38px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--group);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  outline: none;
+}
+
+.group-edit-fields input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+}
