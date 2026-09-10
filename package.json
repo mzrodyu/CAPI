@@ -7,7 +7,7 @@
     "dev": "concurrently \"npm:dev:web\" \"npm:dev:api\"",
     "dev:web": "vite --host 0.0.0.0",
     "dev:api": "go run ./cmd/capi",
-    "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "clean:dist": "node -e \"const fs=require('node:fs');fs.rmSync('dist',{recursive:true,force:true,maxRetries:10,retryDelay:200});if(fs.existsSync('dist')){console.error('clean:dist failed: dist/ still exists - a running process (e.g. the API server) is holding files. Stop it and rebuild, or the old bundles stay behind and get served.');process.exit(1)}\"",
     "build": "npm run clean:dist && tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "go run ./cmd/capi"

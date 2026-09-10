@@ -930,6 +930,7 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	account := api.Group("/account")
 	account.Use(s.accountMiddleware())
 	account.GET("/me", s.accountMe)
+	account.GET("/usage", s.accountUsage)
 	account.GET("/check-in", s.checkInStatus)
 	account.POST("/check-in", s.claimCheckIn)
 	account.POST("/api-keys", s.createOwnAPIKey)
@@ -2135,6 +2136,198 @@ func (s *Server) accountMe(c *gin.Context) {
 		account = publicAccount(*stored)
 	}
 	c.JSON(http.StatusOK, gin.H{"user": user, "account": account, "apiKeys": keys, "session": session})
+}
+
+// usageAccumulator sums the log fields the account page reports on. Successes
+// is tracked only to derive a rate and never serialised.
+type usageAccumulator struct {
+	Requests     int
+	Cost         float64
+	InputTokens  int
+	OutputTokens int
+	Successes    int
+}
+
+func (u *usageAccumulator) add(log RequestLog) {
+	u.Requests++
+	u.Cost += log.Cost
+	u.InputTokens += log.InputTokens
+	u.OutputTokens += log.OutputTokens
+	if log.Status == "success" {
+		u.Successes++
+	}
+}
+
+func (u usageAccumulator) successRate() int {
+	if u.Requests == 0 {
+		return 0
+	}
+	return int(math.Round(float64(u.Successes) / float64(u.Requests) * 100))
+}
+
+type usageStats struct {
+	Requests     int     `json:"requests"`
+	Cost         float64 `json:"cost"`
+	InputTokens  int     `json:"inputTokens"`
+	OutputTokens int     `json:"outputTokens"`
+	SuccessRate  int     `json:"successRate"`
+}
+
+func (u usageAccumulator) stats() usageStats {
+	return usageStats{
+		Requests:     u.Requests,
+		Cost:         round4(u.Cost),
+		InputTokens:  u.InputTokens,
+		OutputTokens: u.OutputTokens,
+		SuccessRate:  u.successRate(),
+	}
+}
+
+// accountUsage aggregates the caller's own request logs so the account page can
+// show where the balance went. It is scoped to the session user: an admin sees
+// their own usage here, not the whole installation's (that is /api/overview).
+func (s *Server) accountUsage(c *gin.Context) {
+	session, ok := s.sessionFromRequest(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "Login required"}})
+		return
+	}
+	// Mirrors /api/overview: the client sends its JS getTimezoneOffset so daily
+	// buckets follow the reader's calendar rather than UTC.
+	timezoneOffset, err := strconv.Atoi(c.DefaultQuery("timezoneOffset", "0"))
+	if err != nil || timezoneOffset < -840 || timezoneOffset > 840 {
+		timezoneOffset = 0
+	}
+	location := time.FixedZone("account", -timezoneOffset*60)
+	rangeDays := queryInt(c, "days", 14, 1, 90)
+
+	now := time.Now().In(location)
+	dayKeys := make([]string, 0, rangeDays)
+	daily := map[string]*usageAccumulator{}
+	for offset := rangeDays - 1; offset >= 0; offset-- {
+		key := now.AddDate(0, 0, -offset).Format("2006-01-02")
+		dayKeys = append(dayKeys, key)
+		// Pre-seed so a day with no traffic renders as zero instead of
+		// vanishing from the series.
+		daily[key] = &usageAccumulator{}
+	}
+	rangeStart := dayKeys[0]
+	todayKey := now.Format("2006-01-02")
+	yesterdayKey := now.AddDate(0, 0, -1).Format("2006-01-02")
+	monthPrefix := now.Format("2006-01")
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var today, yesterday, month, total usageAccumulator
+	models := map[string]*usageAccumulator{}
+	for _, log := range s.state.Logs {
+		if log.UserID == nil || *log.UserID != session.UserID {
+			continue
+		}
+		total.add(log)
+
+		createdAt, err := time.Parse(time.RFC3339Nano, log.CreatedAt)
+		if err != nil {
+			// Still counted in the totals above; it just cannot be placed on a day.
+			continue
+		}
+		day := createdAt.In(location).Format("2006-01-02")
+
+		if entry, ok := daily[day]; ok {
+			entry.add(log)
+		}
+		switch day {
+		case todayKey:
+			today.add(log)
+		case yesterdayKey:
+			yesterday.add(log)
+		}
+		if strings.HasPrefix(day, monthPrefix) {
+			month.add(log)
+		}
+		// The range filter scopes the model breakdown, matching the daily series.
+		if day >= rangeStart {
+			modelID := "未知模型"
+			if log.Model != nil && strings.TrimSpace(*log.Model) != "" {
+				modelID = strings.TrimSpace(*log.Model)
+			}
+			if models[modelID] == nil {
+				models[modelID] = &usageAccumulator{}
+			}
+			models[modelID].add(log)
+		}
+	}
+
+	type usagePoint struct {
+		Day          string  `json:"day"`
+		Requests     int     `json:"requests"`
+		Cost         float64 `json:"cost"`
+		InputTokens  int     `json:"inputTokens"`
+		OutputTokens int     `json:"outputTokens"`
+	}
+	dailyPoints := make([]usagePoint, 0, len(dayKeys))
+	for _, key := range dayKeys {
+		entry := daily[key]
+		dailyPoints = append(dailyPoints, usagePoint{
+			Day:          key,
+			Requests:     entry.Requests,
+			Cost:         round4(entry.Cost),
+			InputTokens:  entry.InputTokens,
+			OutputTokens: entry.OutputTokens,
+		})
+	}
+
+	type modelPoint struct {
+		Model        string  `json:"model"`
+		Requests     int     `json:"requests"`
+		Cost         float64 `json:"cost"`
+		InputTokens  int     `json:"inputTokens"`
+		OutputTokens int     `json:"outputTokens"`
+	}
+	ranked := make([]modelPoint, 0, len(models))
+	for modelID, entry := range models {
+		ranked = append(ranked, modelPoint{
+			Model:        modelID,
+			Requests:     entry.Requests,
+			Cost:         round4(entry.Cost),
+			InputTokens:  entry.InputTokens,
+			OutputTokens: entry.OutputTokens,
+		})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Cost != ranked[j].Cost {
+			return ranked[i].Cost > ranked[j].Cost
+		}
+		if ranked[i].Requests != ranked[j].Requests {
+			return ranked[i].Requests > ranked[j].Requests
+		}
+		return ranked[i].Model < ranked[j].Model
+	})
+	// Keep the list short enough to read at a glance; the tail folds into one
+	// row rather than being dropped.
+	const topModelCount = 6
+	if len(ranked) > topModelCount+1 {
+		other := modelPoint{Model: "其他"}
+		for _, entry := range ranked[topModelCount:] {
+			other.Requests += entry.Requests
+			other.Cost += entry.Cost
+			other.InputTokens += entry.InputTokens
+			other.OutputTokens += entry.OutputTokens
+		}
+		other.Cost = round4(other.Cost)
+		ranked = append(ranked[:topModelCount], other)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"usage": gin.H{
+		"rangeDays": rangeDays,
+		"today":     today.stats(),
+		"yesterday": yesterday.stats(),
+		"month":     month.stats(),
+		"total":     total.stats(),
+		"daily":     dailyPoints,
+		"models":    ranked,
+	}})
 }
 
 func (s *Server) updateAccountProfile(c *gin.Context) {
