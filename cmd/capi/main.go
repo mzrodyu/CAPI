@@ -928,6 +928,7 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	admin.DELETE("/api-keys/:id", s.deleteAPIKey)
 	admin.GET("/channels", s.listChannels)
 	admin.POST("/channels", s.createChannel)
+	admin.POST("/channel-model-preview", s.previewChannelModelsFromConnection)
 	admin.POST("/channels/:id/import-openai-accounts", s.importOpenAIAccounts)
 	admin.POST("/channels/:id/openai-oauth/start", s.startOpenAIOAuth)
 	admin.POST("/channels/:id/openai-oauth/complete", s.completeOpenAIOAuth)
@@ -3653,6 +3654,38 @@ func (s *Server) previewUpstreamModels(c *gin.Context) {
 	s.mu.Unlock()
 
 	modelIDs, err := s.fetchUpstreamModelIDs(channelCopy, upstreamKey)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"models": modelIDs})
+}
+
+// previewChannelModelsFromConnection lists upstream models for connection
+// parameters that are not yet saved as a channel, so the create form can pull
+// and pick models before the channel exists.
+func (s *Server) previewChannelModelsFromConnection(c *gin.Context) {
+	var body struct {
+		Provider       string `json:"provider"`
+		BaseURL        string `json:"baseUrl"`
+		UpstreamAPIKey string `json:"upstreamApiKey"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "Invalid JSON body"}})
+		return
+	}
+	channel := Channel{
+		Provider: strings.TrimSpace(body.Provider),
+		BaseURL:  strings.TrimSpace(body.BaseURL),
+	}
+	upstreamKey := ""
+	for _, line := range strings.Split(body.UpstreamAPIKey, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			upstreamKey = trimmed
+			break
+		}
+	}
+	modelIDs, err := s.fetchUpstreamModelIDs(channel, upstreamKey)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
 		return
