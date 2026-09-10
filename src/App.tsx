@@ -1583,6 +1583,276 @@ function AuthScreen({
   );
 }
 
+type UsageStats = {
+  requests: number;
+  cost: number;
+  inputTokens: number;
+  outputTokens: number;
+  successRate: number;
+};
+
+type UsagePoint = {
+  day: string;
+  requests: number;
+  cost: number;
+  inputTokens: number;
+  outputTokens: number;
+};
+
+type UsageModelPoint = UsagePoint & { model: string };
+
+type AccountUsage = {
+  rangeDays: number;
+  today: UsageStats;
+  yesterday: UsageStats;
+  month: UsageStats;
+  total: UsageStats;
+  daily: UsagePoint[];
+  models: UsageModelPoint[];
+};
+
+// Round an axis maximum up to a clean step so the ticks land on round numbers
+// instead of whatever the peak happened to be. The intermediate steps (1.5,
+// 2.5, 3, 4, 6, 8) matter: with only 1/2/5/10 a peak of 2.47 would be charted
+// against an axis of 5 and use barely half the plot height.
+const USAGE_AXIS_STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+
+function niceCeil(value: number): number {
+  if (!(value > 0)) return 1;
+  const exponent = Math.floor(Math.log10(value));
+  const magnitude = Math.pow(10, exponent);
+  const normalized = value / magnitude;
+  const step = USAGE_AXIS_STEPS.find((candidate) => normalized <= candidate) ?? 10;
+  return step * magnitude;
+}
+
+// Bars and gridlines map the axis onto 88% of the plot so the peak's direct
+// label always has headroom above the tallest column.
+const USAGE_AXIS_SCALE = 88;
+
+function usageDayLabel(day: string) {
+  const parts = day.split("-");
+  return parts.length === 3 ? `${parts[1]}/${parts[2]}` : day;
+}
+
+type UsageRange = 7 | 14 | 30;
+
+// UsageSection is the account page's dashboard. Costs are a single series, so
+// every mark wears one hue (the theme accent) - never a value ramp, which would
+// re-encode bar length as colour and spend the identity channel for nothing.
+function UsageSection() {
+  const [rangeDays, setRangeDays] = useState<UsageRange>(14);
+  const [usage, setUsage] = useState<AccountUsage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [hoveredDay, setHoveredDay] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchJson<{ usage: AccountUsage }>(
+      `/api/account/usage?days=${rangeDays}&timezoneOffset=${new Date().getTimezoneOffset()}`
+    )
+      .then((data) => {
+        if (cancelled) return;
+        setUsage({ ...data.usage, daily: arrayOf(data.usage?.daily), models: arrayOf(data.usage?.models) });
+        setFailed(false);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rangeDays]);
+
+  const daily = usage?.daily ?? [];
+  const models = usage?.models ?? [];
+  const axisMax = niceCeil(Math.max(0, ...daily.map((point) => point.cost)));
+  const maxModelCost = Math.max(0, ...models.map((entry) => entry.cost));
+  const peakDay = daily.reduce<UsagePoint | null>(
+    (best, point) => (!best || point.cost > best.cost ? point : best),
+    null
+  );
+  // Keep at most ~5 date labels so they cannot collide on a 30-day range.
+  const labelStride = Math.max(1, Math.ceil(daily.length / 5));
+  const hovered = daily.find((point) => point.day === hoveredDay) || null;
+  const hoveredIndex = hovered ? daily.indexOf(hovered) : -1;
+  // Spending more is neither good nor bad, so the delta carries no status colour.
+  const todayDelta = usage ? usage.today.cost - usage.yesterday.cost : 0;
+
+  return (
+    <section className="account-section usage-section">
+      <div className="account-section-title">
+        <div>
+          <p className="eyebrow">Usage</p>
+          <h2>用量概览</h2>
+        </div>
+      </div>
+
+      {!usage && loading && <p className="usage-placeholder">正在统计用量…</p>}
+      {!usage && !loading && failed && <p className="usage-placeholder">用量加载失败，请稍后重试</p>}
+
+      {usage && (
+        <div className={loading ? "usage-body is-refreshing" : "usage-body"}>
+          <div className="usage-kpi">
+            <div className="usage-tile">
+              <span>今日消费</span>
+              <strong>{formatAmount(usage.today.cost)}</strong>
+              <small>
+                较昨日 {todayDelta >= 0 ? "+" : "−"}
+                {formatAmount(Math.abs(todayDelta))}
+              </small>
+            </div>
+            <div className="usage-tile">
+              <span>本月消费</span>
+              <strong>{formatAmount(usage.month.cost)}</strong>
+              <small>{formatTokenCount(usage.month.requests)} 次请求</small>
+            </div>
+            <div className="usage-tile">
+              <span>今日请求</span>
+              <strong>{formatTokenCount(usage.today.requests)}</strong>
+              <small>成功率 {usage.today.successRate}%</small>
+            </div>
+            <div className="usage-tile">
+              <span>累计消费</span>
+              <strong>{formatAmount(usage.total.cost)}</strong>
+              <small>{formatTokenCount(usage.total.requests)} 次请求</small>
+            </div>
+          </div>
+
+          <div className="usage-range" role="group" aria-label="统计范围">
+            {([7, 14, 30] as UsageRange[]).map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={rangeDays === value ? "selected" : ""}
+                aria-pressed={rangeDays === value}
+                onClick={() => setRangeDays(value)}
+              >
+                近 {value} 天
+              </button>
+            ))}
+          </div>
+
+          <div className="usage-block">
+            <div className="usage-block-head">
+              <strong>每日消费</strong>
+              <span>近 {usage.rangeDays} 天</span>
+            </div>
+            {daily.length === 0 || axisMax <= 0 ? (
+              <p className="usage-placeholder">这段时间还没有消费记录</p>
+            ) : (
+              <>
+                <div className="usage-plot">
+                  <div className="usage-grid" aria-hidden="true">
+                    {[1, 0.5, 0].map((ratio) => (
+                      <div className="usage-gridline" key={ratio} style={{ bottom: `${ratio * USAGE_AXIS_SCALE}%` }}>
+                        <span>{formatAmount(axisMax * ratio)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="usage-columns">
+                    {daily.map((point, index) => {
+                      const height = axisMax > 0 ? (point.cost / axisMax) * USAGE_AXIS_SCALE : 0;
+                      // A zero-cost day must not draw a mark at all; the bar's
+                      // min-height exists for tiny non-zero values only.
+                      const hasSpend = point.cost > 0;
+                      const isPeak = hasSpend && peakDay !== null && point.day === peakDay.day;
+                      const showLabel = index % labelStride === 0 || index === daily.length - 1;
+                      return (
+                        <div className="usage-column" key={point.day}>
+                          <button
+                            type="button"
+                            className={hoveredDay === point.day ? "usage-column-hit is-hovered" : "usage-column-hit"}
+                            onMouseEnter={() => setHoveredDay(point.day)}
+                            onMouseLeave={() => setHoveredDay("")}
+                            onFocus={() => setHoveredDay(point.day)}
+                            onBlur={() => setHoveredDay("")}
+                            aria-label={`${point.day} 消费 ${formatAmount(point.cost)}，${point.requests} 次请求`}
+                          >
+                            {hasSpend && <span className="usage-column-bar" style={{ height: `${height}%` }} />}
+                            {isPeak && (
+                              <span className="usage-column-peak" style={{ bottom: `calc(${height}% + 6px)` }}>
+                                {formatAmount(point.cost)}
+                              </span>
+                            )}
+                          </button>
+                          <span className="usage-column-tick">{showLabel ? usageDayLabel(point.day) : ""}</span>
+                        </div>
+                      );
+                    })}
+                    {hovered && (
+                      <div
+                        className="usage-tooltip"
+                        style={{ left: `${((hoveredIndex + 0.5) / daily.length) * 100}%` }}
+                        role="status"
+                      >
+                        <strong>{formatAmount(hovered.cost)}</strong>
+                        <span>{hovered.day}</span>
+                        <span>{hovered.requests} 次请求</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <details className="usage-table-toggle">
+                  <summary>查看数据表</summary>
+                  <div className="usage-table">
+                    <div className="usage-table-head">
+                      <span>日期</span>
+                      <span>请求</span>
+                      <span>消费</span>
+                    </div>
+                    {daily
+                      .slice()
+                      .reverse()
+                      .map((point) => (
+                        <div className="usage-table-row" key={point.day}>
+                          <span>{point.day}</span>
+                          <span>{point.requests}</span>
+                          <span>{formatAmount(point.cost)}</span>
+                        </div>
+                      ))}
+                  </div>
+                </details>
+              </>
+            )}
+          </div>
+
+          <div className="usage-block">
+            <div className="usage-block-head">
+              <strong>按模型拆分</strong>
+              <span>近 {usage.rangeDays} 天消费</span>
+            </div>
+            {models.length === 0 ? (
+              <p className="usage-placeholder">这段时间还没有调用记录</p>
+            ) : (
+              <div className="usage-models">
+                {models.map((entry) => (
+                  <div className="usage-model-row" key={entry.model}>
+                    <span className="usage-model-name" title={entry.model}>{entry.model}</span>
+                    <span className="usage-model-track">
+                      <span
+                        className="usage-model-bar"
+                        style={{ width: `${maxModelCost > 0 ? (entry.cost / maxModelCost) * 100 : 0}%` }}
+                      />
+                    </span>
+                    <span className="usage-model-value">{formatAmount(entry.cost)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function AccountHome({
   theme,
   setTheme,
@@ -1696,6 +1966,8 @@ function AccountHome({
             <strong>{data ? data.user.balance.toFixed(2) : "-"}</strong>
           </div>
         </div>
+
+        <UsageSection />
 
         <section className="account-section check-in-section">
           <div className="account-section-title">

@@ -3654,6 +3654,348 @@ button.table-row:hover {
   align-self: center;
 }
 
+/* Usage dashboard. Costs are a single series, so every mark wears one hue
+   (--blue, which clears 3:1 against both surfaces: 4.02 light / 4.24 dark).
+   Never a value ramp - that would re-encode bar length as colour. */
+.usage-section {
+  --usage-mark: var(--blue);
+  --usage-plot-height: 150px;
+  --usage-tick-band: 18px;
+  --usage-axis-gutter: 46px;
+}
+
+.usage-body {
+  display: grid;
+  gap: 16px;
+  transition: opacity 160ms ease;
+}
+
+/* Refetch holds the previous render instead of flashing a skeleton. */
+.usage-body.is-refreshing {
+  opacity: 0.55;
+}
+
+.usage-placeholder {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.usage-kpi {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.usage-tile {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 12px;
+  background: var(--group);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+}
+
+.usage-tile > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Proportional figures: tabular-nums makes a value like 121 look loose. */
+.usage-tile > strong {
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.usage-tile > small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.usage-range {
+  display: inline-flex;
+  gap: 4px;
+  width: fit-content;
+  padding: 3px;
+  background: var(--group);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+}
+
+.usage-range button {
+  min-height: 28px;
+  padding: 0 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.usage-range button.selected {
+  color: var(--text);
+  background: var(--surface-solid);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+.account-page[data-theme="dark"] .usage-range button.selected {
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: none;
+}
+
+.usage-block {
+  display: grid;
+  gap: 10px;
+}
+
+.usage-block-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.usage-block-head > strong {
+  font-size: 14px;
+}
+
+.usage-block-head > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The container includes the tick band so the axis labels are never clipped
+   into a nested scrollbar. */
+.usage-plot {
+  position: relative;
+  padding-left: var(--usage-axis-gutter);
+}
+
+.usage-grid {
+  position: absolute;
+  top: 0;
+  left: var(--usage-axis-gutter);
+  right: 0;
+  height: var(--usage-plot-height);
+  pointer-events: none;
+}
+
+.usage-gridline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.usage-gridline > span {
+  position: absolute;
+  right: 100%;
+  margin-right: 8px;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-columns {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  /* The surface gap that separates touching columns. */
+  gap: 2px;
+}
+
+.usage-column {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+
+/* The hit target is the full column height, so the reader aims at a date
+   rather than at a 2px bar. */
+.usage-column-hit {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 100%;
+  height: var(--usage-plot-height);
+  padding: 0;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.usage-column-bar {
+  display: block;
+  width: min(24px, 100%);
+  min-height: 2px;
+  background: var(--usage-mark);
+  /* Rounded data-end, square at the baseline. */
+  border-radius: 4px 4px 0 0;
+  transition: opacity 160ms ease;
+}
+
+.usage-column-hit.is-hovered .usage-column-bar {
+  opacity: 0.72;
+}
+
+.usage-column-peak {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.usage-column-tick {
+  height: var(--usage-tick-band);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Anchored just above the tick band so it stays inside the card: above the
+   container it would cover the block heading, and the top strip belongs to the
+   peak's direct label. */
+.usage-tooltip {
+  position: absolute;
+  bottom: calc(var(--usage-tick-band) + 8px);
+  z-index: 2;
+  display: grid;
+  gap: 1px;
+  transform: translateX(-50%);
+  padding: 7px 10px;
+  color: var(--text);
+  background: var(--surface-solid);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* The value leads; the label follows. */
+.usage-tooltip > strong {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-tooltip > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.usage-table-toggle > summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.usage-table {
+  display: grid;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.usage-table-head,
+.usage-table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 88px;
+  gap: 10px;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.usage-table-head {
+  color: var(--muted);
+  background: var(--group);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.usage-table-head > span:not(:first-child),
+.usage-table-row > span:not(:first-child) {
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-table-row {
+  border-top: 1px solid var(--hairline);
+  font-size: 12px;
+}
+
+.usage-models {
+  display: grid;
+  gap: 8px;
+}
+
+.usage-model-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 160px) minmax(0, 1fr) 72px;
+  gap: 10px;
+  align-items: center;
+}
+
+.usage-model-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-model-track {
+  display: block;
+  height: 10px;
+  background: var(--group);
+  border-radius: 999px;
+}
+
+.usage-model-bar {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--usage-mark);
+  border-radius: 999px;
+}
+
+.usage-model-value {
+  justify-self: end;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .usage-kpi {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .usage-model-row {
+    grid-template-columns: minmax(0, 1fr) 64px;
+  }
+
+  .usage-model-track {
+    display: none;
+  }
+}
+
 .account-model-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

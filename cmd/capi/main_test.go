@@ -5199,3 +5199,114 @@ func TestPublicCatalogFiltersBySessionGroup(t *testing.T) {
 		t.Fatalf("catalog dropped a reachable model: %s", signedIn.Body.String())
 	}
 }
+
+func TestAccountUsageAggregatesOwnLogsOnly(t *testing.T) {
+	withEnv(t, map[string]string{"PERSISTENCE": "memory"})
+	server, router := testServerRouter(t)
+
+	const userID = "usr_usage"
+	const otherID = "usr_other"
+
+	server.mu.Lock()
+	server.state.Users = []User{
+		{ID: userID, Name: "Usage User", Role: "user", Status: "active"},
+		{ID: otherID, Name: "Other User", Role: "user", Status: "active"},
+	}
+	account := Account{ID: "acct_usage", UserID: userID, Username: "usage", Role: "user", Status: "active"}
+	server.state.Accounts = []Account{account}
+
+	utc := time.Now().UTC()
+	stamp := func(offsetDays int) string {
+		return utc.AddDate(0, 0, offsetDays).Format(time.RFC3339Nano)
+	}
+	const modelA, modelB = "gpt-5.5", "deepseek-v4"
+	server.state.Logs = []RequestLog{
+		{ID: "log_today_1", UserID: stringPtr(userID), Model: stringPtr(modelA), Status: "success", Cost: 1.5, InputTokens: 100, OutputTokens: 50, CreatedAt: stamp(0)},
+		{ID: "log_today_2", UserID: stringPtr(userID), Model: stringPtr(modelA), Status: "failed", Cost: 0.5, InputTokens: 10, OutputTokens: 0, CreatedAt: stamp(0)},
+		{ID: "log_yesterday", UserID: stringPtr(userID), Model: stringPtr(modelB), Status: "success", Cost: 2.0, InputTokens: 200, OutputTokens: 20, CreatedAt: stamp(-1)},
+		{ID: "log_in_range", UserID: stringPtr(userID), Model: stringPtr(modelB), Status: "success", Cost: 4.0, InputTokens: 400, OutputTokens: 40, CreatedAt: stamp(-3)},
+		{ID: "log_out_of_range", UserID: stringPtr(userID), Model: stringPtr(modelB), Status: "success", Cost: 8.0, InputTokens: 800, OutputTokens: 80, CreatedAt: stamp(-20)},
+		{ID: "log_other_user", UserID: stringPtr(otherID), Model: stringPtr(modelA), Status: "success", Cost: 99.0, InputTokens: 1, OutputTokens: 1, CreatedAt: stamp(0)},
+	}
+	server.mu.Unlock()
+
+	// The endpoint is session-scoped.
+	anonymous := perform(router, http.MethodGet, "/api/account/usage", "", nil)
+	if anonymous.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous usage status = %d body = %s", anonymous.Code, anonymous.Body.String())
+	}
+
+	session := server.createAccountSession(account, "Usage User", "password")
+	headers := map[string]string{"Cookie": "capi_session=" + session.ID}
+	response := perform(router, http.MethodGet, "/api/account/usage?days=7&timezoneOffset=0", "", headers)
+	if response.Code != http.StatusOK {
+		t.Fatalf("usage status = %d body = %s", response.Code, response.Body.String())
+	}
+
+	var payload struct {
+		Usage struct {
+			RangeDays int        `json:"rangeDays"`
+			Today     usageStats `json:"today"`
+			Yesterday usageStats `json:"yesterday"`
+			Total     usageStats `json:"total"`
+			Daily     []struct {
+				Day      string  `json:"day"`
+				Requests int     `json:"requests"`
+				Cost     float64 `json:"cost"`
+			} `json:"daily"`
+			Models []struct {
+				Model string  `json:"model"`
+				Cost  float64 `json:"cost"`
+			} `json:"models"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode usage: %v", err)
+	}
+
+	// Only this user's logs count: 1.5 + 0.5 + 2.0 + 4.0 + 8.0. Never the other user's 99.
+	if payload.Usage.Total.Requests != 5 || payload.Usage.Total.Cost != 16 {
+		t.Fatalf("total = %#v, want 5 requests and cost 16", payload.Usage.Total)
+	}
+	if payload.Usage.Today.Requests != 2 || payload.Usage.Today.Cost != 2 {
+		t.Fatalf("today = %#v, want 2 requests and cost 2", payload.Usage.Today)
+	}
+	if payload.Usage.Today.SuccessRate != 50 {
+		t.Fatalf("today success rate = %d, want 50", payload.Usage.Today.SuccessRate)
+	}
+	if payload.Usage.Yesterday.Cost != 2 {
+		t.Fatalf("yesterday = %#v, want cost 2", payload.Usage.Yesterday)
+	}
+
+	if payload.Usage.RangeDays != 7 || len(payload.Usage.Daily) != 7 {
+		t.Fatalf("daily series has %d points for %d days", len(payload.Usage.Daily), payload.Usage.RangeDays)
+	}
+	zeroDays := 0
+	for _, point := range payload.Usage.Daily {
+		if point.Day == "" {
+			t.Fatal("a daily point is missing its day key")
+		}
+		if point.Requests == 0 {
+			zeroDays++
+		}
+	}
+	// Empty days must render as zero rather than vanishing from the series.
+	if zeroDays < 4 {
+		t.Fatalf("expected empty days to be present as zero, got %d: %#v", zeroDays, payload.Usage.Daily)
+	}
+
+	// The model breakdown is scoped to the same range, so the 20-day-old log
+	// must not appear here even though it counts toward the totals.
+	var modelCost float64
+	seen := map[string]bool{}
+	for _, model := range payload.Usage.Models {
+		modelCost += model.Cost
+		seen[model.Model] = true
+	}
+	if !seen[modelA] || !seen[modelB] {
+		t.Fatalf("model breakdown missing a model: %#v", payload.Usage.Models)
+	}
+	if modelCost != 8 {
+		t.Fatalf("model breakdown cost = %v, want 8 (range-scoped)", modelCost)
+	}
+}
