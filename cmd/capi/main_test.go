@@ -5310,3 +5310,195 @@ func TestAccountUsageAggregatesOwnLogsOnly(t *testing.T) {
 		t.Fatalf("model breakdown cost = %v, want 8 (range-scoped)", modelCost)
 	}
 }
+
+// A restart must not drop user groups. They were written to the state blob but
+// never read back, so every deploy silently reset the group list.
+func TestUserGroupsSurviveRestart(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "state.json")
+	withEnv(t, map[string]string{"PERSISTENCE": "file", "DATA_FILE": dataFile})
+
+	server, router := testServerRouter(t)
+
+	created := perform(router, http.MethodPost, "/api/groups", `{"name":"VIP","description":"尊享用户"}`, nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create group status = %d body = %s", created.Code, created.Body.String())
+	}
+	var payload struct {
+		Group UserGroup `json:"group"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	vipID := payload.Group.ID
+
+	channel := perform(router, http.MethodPost, "/api/channels", `{"name":"Gated","baseUrl":"https://gated.example.test/v1","allowedGroupIds":["`+vipID+`"]}`, nil)
+	if channel.Code != http.StatusCreated {
+		t.Fatalf("create channel status = %d body = %s", channel.Code, channel.Body.String())
+	}
+
+	server.mu.Lock()
+	server.state.Users = append(server.state.Users, User{ID: "usr_vip", Name: "VIP User", Role: "user", Status: "active", GroupID: vipID})
+	server.saveStateLocked()
+	server.mu.Unlock()
+
+	// The file on disk must actually carry the group.
+	content, err := os.ReadFile(dataFile)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	if !bytes.Contains(content, []byte("VIP")) {
+		t.Fatal("group was not written to the state file")
+	}
+
+	// Restart against the same data file.
+	restarted, restartedRouter := testServerRouter(t)
+
+	groups := perform(restartedRouter, http.MethodGet, "/api/groups", "", nil)
+	if groups.Code != http.StatusOK {
+		t.Fatalf("list groups status = %d body = %s", groups.Code, groups.Body.String())
+	}
+	if !bytes.Contains(groups.Body.Bytes(), []byte(`"name":"VIP"`)) {
+		t.Fatalf("group did not survive restart: %s", groups.Body.String())
+	}
+
+	restarted.mu.Lock()
+	defer restarted.mu.Unlock()
+	if restarted.findUserGroup(vipID) == nil {
+		t.Fatalf("group %s missing after restart; groups = %#v", vipID, restarted.state.Groups)
+	}
+	user := restarted.findUser("usr_vip")
+	if user == nil {
+		t.Fatal("user did not survive restart")
+	}
+	if user.GroupID != vipID {
+		t.Fatalf("user group after restart = %q, want %q", user.GroupID, vipID)
+	}
+	// The channel's scoping must survive too, or the group silently loses meaning.
+	for _, item := range restarted.state.Channels {
+		if item.Name == "Gated" && !containsString(item.AllowedGroupIDs, vipID) {
+			t.Fatalf("channel lost its group scoping after restart: %#v", item.AllowedGroupIDs)
+		}
+	}
+}
+
+// A dangling group reference must not silently confine a user to unrestricted
+// channels; normalization clears it.
+func TestDanglingUserGroupIsCleared(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "state.json")
+	stored := defaultState()
+	stored.Users = []User{
+		{ID: "usr_orphan", Name: "Orphan", Role: "user", Status: "active", GroupID: "grp_deleted_long_ago"},
+	}
+	content, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(dataFile, content, 0644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	withEnv(t, map[string]string{"PERSISTENCE": "file", "DATA_FILE": dataFile})
+	server, _ := testServerRouter(t)
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	user := server.findUser("usr_orphan")
+	if user == nil {
+		t.Fatal("user missing after load")
+	}
+	if user.GroupID != "" {
+		t.Fatalf("dangling group reference survived as %q", user.GroupID)
+	}
+	// Normalization must also have materialised the default group.
+	if len(server.state.Groups) == 0 {
+		t.Fatal("default group was not created during normalization")
+	}
+}
+
+// Guards the whole class of bug where a collection is added to AppState, written
+// by saveStateLocked, but never restored by loadState/loadPostgresState. That is
+// how user groups were silently dropped on every restart: the field existed and
+// persisted correctly, but no loader read it back.
+func TestEveryAppStateCollectionRoundTrips(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "state.json")
+	stored := defaultState()
+	stored.Users = []User{{ID: "usr_rt", Name: "Round Trip", Role: "user", Status: "active"}}
+	stored.Groups = []UserGroup{{ID: "grp_rt", Name: "Round Trip Group"}}
+	stored.APIKeys = []APIKey{{ID: "key_rt", UserID: "usr_rt", Name: "K", Prefix: "cat_rt", Status: "active"}}
+	stored.Channels = []Channel{{ID: "chn_rt", Name: "Round Trip Channel", BaseURL: "https://rt.example.test/v1", Status: "disabled", Models: []string{}}}
+	stored.Models = []Model{{ID: "model_rt", Name: "Round Trip Model", Vendor: "V", Status: "available", Aliases: []string{}}}
+	stored.QuotaLedger = []QuotaEntry{{ID: "quota_rt", RequestID: "req_rt", Amount: 1}}
+	stored.CheckIns = []CheckInRecord{{ID: "checkin_rt", Day: "2026-01-01"}}
+	stored.Logs = []RequestLog{{ID: "req_rt", Status: "success"}}
+	stored.Accounts = []Account{{ID: "acct_rt", UserID: "usr_rt", Username: "roundtrip", Role: "user", Status: "active"}}
+	stored.Settings.Auth = AuthSettings{Managed: true, DefaultGroupID: "grp_rt", RegistrationMode: "username"}
+	stored.Settings.Maintenance = MaintenanceSettings{Managed: true, LogRetentionDays: 30, MaxLogs: 10000, MaxQuotaEntries: 20000}
+
+	content, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(dataFile, content, 0644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	withEnv(t, map[string]string{"PERSISTENCE": "file", "DATA_FILE": dataFile})
+	server, _ := testServerRouter(t)
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+
+	// Assert the seeded entry survived, not merely that the collection is
+	// non-empty: normalization can materialise entries of its own (the default
+	// group), which would hide a collection that was never loaded at all.
+	present := map[string]bool{}
+	for _, user := range server.state.Users {
+		present["Users/"+user.ID] = true
+	}
+	for _, group := range server.state.Groups {
+		present["Groups/"+group.ID] = true
+	}
+	for _, key := range server.state.APIKeys {
+		present["APIKeys/"+key.ID] = true
+	}
+	for _, channel := range server.state.Channels {
+		present["Channels/"+channel.ID] = true
+	}
+	for _, model := range server.state.Models {
+		present["Models/"+model.ID] = true
+	}
+	for _, entry := range server.state.QuotaLedger {
+		present["QuotaLedger/"+entry.ID] = true
+	}
+	for _, record := range server.state.CheckIns {
+		present["CheckIns/"+record.ID] = true
+	}
+	for _, log := range server.state.Logs {
+		present["Logs/"+log.ID] = true
+	}
+	for _, account := range server.state.Accounts {
+		present["Accounts/"+account.ID] = true
+	}
+	for _, expected := range []string{
+		"Users/usr_rt",
+		"Groups/grp_rt",
+		"APIKeys/key_rt",
+		"Channels/chn_rt",
+		"Models/model_rt",
+		"QuotaLedger/quota_rt",
+		"CheckIns/checkin_rt",
+		"Logs/req_rt",
+		"Accounts/acct_rt",
+	} {
+		if !present[expected] {
+			t.Errorf("AppState entry %s did not survive a load - is its collection restored in loadState/loadPostgresState?", expected)
+		}
+	}
+
+	if !server.state.Settings.Auth.Managed || server.state.Settings.Auth.DefaultGroupID != "grp_rt" {
+		t.Errorf("auth settings did not round trip: %#v", server.state.Settings.Auth)
+	}
+	if !server.state.Settings.Maintenance.Managed {
+		t.Errorf("maintenance settings did not round trip: %#v", server.state.Settings.Maintenance)
+	}
+}

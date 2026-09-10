@@ -10285,6 +10285,9 @@ func (s *Server) loadState() {
 	if stored.Users != nil {
 		s.state.Users = stored.Users
 	}
+	if stored.Groups != nil {
+		s.state.Groups = stored.Groups
+	}
 	if stored.APIKeys != nil {
 		s.state.APIKeys = stored.APIKeys
 	}
@@ -10517,6 +10520,31 @@ func (s *Server) migrateModelPricing() bool {
 
 func (s *Server) normalizeStateCollections() bool {
 	changed := false
+
+	// The default registration group must always exist: otherwise the console
+	// shows an unexplained empty group list, and a new user has nothing to be
+	// assigned to. Creating it here also guarantees findUserGroup below can
+	// resolve the default before dangling references are judged.
+	groupCount := len(s.state.Groups)
+	s.ensureDefaultUserGroupLocked()
+	if len(s.state.Groups) != groupCount {
+		changed = true
+	}
+
+	// A user can reference a group that no longer exists - most obviously when
+	// state was written by a build that did not persist groups. A dangling id
+	// silently confines the user to unrestricted channels, so clear it instead.
+	for i := range s.state.Users {
+		groupID := strings.TrimSpace(s.state.Users[i].GroupID)
+		if groupID == "" {
+			continue
+		}
+		if s.findUserGroup(groupID) == nil {
+			s.state.Users[i].GroupID = ""
+			changed = true
+		}
+	}
+
 	for i := range s.state.Channels {
 		if s.state.Channels[i].Models == nil {
 			s.state.Channels[i].Models = []string{}
@@ -10678,6 +10706,9 @@ func (s *Server) loadPostgresState() {
 	}
 	if stored.Users != nil {
 		s.state.Users = stored.Users
+	}
+	if stored.Groups != nil {
+		s.state.Groups = stored.Groups
 	}
 	if stored.APIKeys != nil {
 		s.state.APIKeys = stored.APIKeys
