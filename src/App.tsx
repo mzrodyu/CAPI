@@ -3062,6 +3062,7 @@ function DrawingView({
   const [accountSorts, setAccountSorts] = useState<Record<string, "pool" | "oldest" | "recent" | "expiry">>({});
   const [oauthChannelId, setOAuthChannelId] = useState("");
   const [authSessionChannelId, setAuthSessionChannelId] = useState("");
+  const [antigravityChannelId, setAntigravityChannelId] = useState("");
   const [addAccountChannelId, setAddAccountChannelId] = useState("");
   const defaultVisibleAccounts = 24;
   const accountBatchSize = 48;
@@ -3253,7 +3254,7 @@ function DrawingView({
                                 {account.email || account.name || account.accountId || account.id}
                               </strong>
                               <span className={`source-tag source-tag-${account.source === "web-login" ? "web" : "manual"}`}>
-                                {account.source === "web-login" ? "网页登录" : account.source === "web-oauth" ? "网页 OAuth" : account.source === "oauth" ? "Codex OAuth" : "导入"}
+                                {account.source === "web-login" ? "网页登录" : account.source === "web-oauth" ? "网页 OAuth" : account.source === "oauth" ? "Codex OAuth" : (account.source === "antigravity" || account.source === "agy" || account.source === "google-antigravity") ? "Antigravity" : "导入"}
                               </span>
                             </div>
                             <span>{account.lastError ? `${accountErrorLabel(account.lastErrorCode)}${accountErrorLabel(account.lastErrorCode) ? " · " : ""}${account.lastError}` : (account.lastCheckedAt ? `上次检测 ${formatDate(account.lastCheckedAt)}` : "未检测")}</span>
@@ -3348,6 +3349,10 @@ function DrawingView({
               setAuthSessionChannelId(addAccountChannelId);
               setAddAccountChannelId("");
             }}
+            onAntigravity={() => {
+              setAntigravityChannelId(addAccountChannelId);
+              setAddAccountChannelId("");
+            }}
             onImport={async (file) => {
               await importFile(addAccountChannelId, file);
               setAddAccountChannelId("");
@@ -3363,6 +3368,14 @@ function DrawingView({
             onClose={() => setAuthSessionChannelId("")}
           />
         )}
+        {antigravityChannelId && (
+          <AntigravityModal
+            onImport={async (token) => {
+              await importFile(antigravityChannelId, new File([JSON.stringify(antigravityImportPayload(token))], "antigravity.json", { type: "application/json" }));
+            }}
+            onClose={() => setAntigravityChannelId("")}
+          />
+        )}
       </Panel>
   );
 }
@@ -3370,11 +3383,13 @@ function DrawingView({
 function AccountAddModal({
   busy,
   onAuthSession,
+  onAntigravity,
   onImport,
   onClose
 }: {
   busy: boolean;
   onAuthSession: () => void;
+  onAntigravity: () => void;
   onImport: (file: File) => Promise<void>;
   onClose: () => void;
 }) {
@@ -3393,6 +3408,11 @@ function AccountAddModal({
             <span className="account-add-icon">A</span>
             <strong>导入网页会话</strong>
             <small>粘贴完整 authsession JSON，保留 sessionToken</small>
+          </button>
+          <button type="button" className="account-add-option" onClick={onAntigravity} disabled={busy}>
+            <span className="account-add-icon">G</span>
+            <strong>导入 Antigravity</strong>
+            <small>粘贴 Google OAuth JSON 或 refresh token</small>
           </button>
           <label className={`account-add-option${busy ? " disabled" : ""}`}>
             <span className="account-add-icon">J</span>
@@ -3467,6 +3487,61 @@ function AuthSessionModal({ onImport, onClose }: { onImport: (token: string) => 
     <div className="modal-head"><strong>添加网页会话</strong><button type="button" className="icon-button" onClick={onClose}>×</button></div>
     <p className="muted-inline">可直接粘贴 chatgpt.com/api/auth/session 的完整 JSON；也支持浏览器 <code>__Secure-next-auth.session-token</code> 的值或完整 Cookie 字符串。</p>
     <label className="authsession-field"><span>authsession</span><textarea autoFocus value={token} onChange={(event) => setToken(event.target.value)} placeholder="eyJhbGci..." /></label>
+    {error && <div className="form-error">{error}</div>}
+	{success && <div className="form-success">{success}</div>}
+    <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button type="button" className="primary-button" disabled={busy} onClick={submit}>{busy ? "导入中" : "导入账号"}</button></div>
+  </div></div>;
+}
+
+function antigravityImportPayload(value: string) {
+  const raw = value.trim();
+  try {
+    const json = JSON.parse(raw) as Record<string, unknown>;
+    const tokens = json.tokens && typeof json.tokens === "object" ? (json.tokens as Record<string, unknown>) : {};
+    const pick = (...keys: string[]) => {
+      for (const key of keys) {
+        if (typeof json[key] === "string" && json[key]) return json[key] as string;
+        if (typeof tokens[key] === "string" && tokens[key]) return tokens[key] as string;
+      }
+      return "";
+    };
+    const accessToken = pick("access_token", "accessToken");
+    const refreshToken = pick("refresh_token", "refreshToken");
+    const email = pick("email");
+    const expired = pick("expired", "expires_at", "expiresAt", "expiry");
+    if (accessToken || refreshToken) {
+      return {
+        accessToken: accessToken || undefined,
+        refreshToken: refreshToken || undefined,
+        email: email || undefined,
+        expired: expired || undefined,
+        source: "antigravity"
+      };
+    }
+  } catch {
+    // A bare refresh token is valid input and need not be JSON.
+  }
+  return { refreshToken: raw, source: "antigravity" };
+}
+
+function AntigravityModal({ onImport, onClose }: { onImport: (token: string) => Promise<void>; onClose: () => void }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  async function submit() {
+    if (!token.trim()) { setError("请粘贴 Antigravity OAuth JSON 或 refresh token"); return; }
+    setBusy(true); setError(""); setSuccess("");
+    try {
+      await onImport(token.trim());
+      setToken("");
+      setSuccess("已导入，继续粘贴下一条即可");
+    } catch (err) { setError(err instanceof Error ? err.message : "导入失败"); } finally { setBusy(false); }
+  }
+  return <div className="modal-backdrop" onClick={onClose}><div className="modal-card" onClick={(event) => event.stopPropagation()}>
+    <div className="modal-head"><strong>导入 Antigravity 账号</strong><button type="button" className="icon-button" onClick={onClose}>×</button></div>
+    <p className="muted-inline">粘贴 Antigravity 的 Google OAuth 凭证 JSON（含 <code>access_token</code> / <code>refresh_token</code>），或直接粘贴 refresh token。导入后会自动刷新并加入账号池。</p>
+    <label className="authsession-field"><span>OAuth JSON / refresh token</span><textarea autoFocus value={token} onChange={(event) => setToken(event.target.value)} placeholder='{"access_token":"ya29...","refresh_token":"1//..."}' /></label>
     {error && <div className="form-error">{error}</div>}
 	{success && <div className="form-success">{success}</div>}
     <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button type="button" className="primary-button" disabled={busy} onClick={submit}>{busy ? "导入中" : "导入账号"}</button></div>

@@ -124,14 +124,25 @@ func (s *Server) resolveOpenAIAccountAccessToken(account OpenAIAccount) (string,
 		}
 		return "", fmt.Errorf("网页会话 Cookie 已失效或不是有效的 __Secure-next-auth.session-token: %w", err)
 	}
-	if !openAIAccountAccessTokenExpiring(accessToken, account.ExpiresAt, 24*time.Hour) || !hasRefreshToken {
+	refreshLeeway := 24 * time.Hour
+	if isAntigravityAccount(account) {
+		// Google access tokens live ~1h; only refresh near expiry so a valid
+		// token is reused instead of exchanged on every request.
+		refreshLeeway = antigravityTokenSafetyWindow
+	}
+	if !openAIAccountAccessTokenExpiring(accessToken, account.ExpiresAt, refreshLeeway) || !hasRefreshToken {
 		return accessToken, nil
 	}
 	refreshToken, err := s.revealSecret(account.RefreshToken)
 	if err != nil {
 		return "", err
 	}
-	refreshed, err := s.refreshOpenAIAccount(refreshToken)
+	var refreshed OpenAIRefreshResult
+	if isAntigravityAccount(account) {
+		refreshed, err = s.refreshAntigravityAccount(refreshToken)
+	} else {
+		refreshed, err = s.refreshOpenAIAccount(refreshToken)
+	}
 	if err != nil {
 		return "", err
 	}
