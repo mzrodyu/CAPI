@@ -3203,6 +3203,19 @@ func (s *Server) importOpenAIAccounts(c *gin.Context) {
 		if strings.TrimSpace(account.AccessToken) == "" && strings.TrimSpace(account.SessionToken) != "" {
 			account.AccessToken, account.ExpiresAt, _ = fetchChatGPTAccessTokenViaSessionCookie(account.SessionToken)
 		}
+		// Antigravity exports may carry only a Google refresh token; mint an
+		// access token now so the account joins the active pool immediately.
+		if strings.TrimSpace(account.AccessToken) == "" && isAntigravitySource(account.Source) && strings.TrimSpace(account.RefreshToken) != "" {
+			if refreshed, err := s.refreshAntigravityAccount(account.RefreshToken); err == nil && strings.TrimSpace(refreshed.AccessToken) != "" {
+				account.AccessToken = refreshed.AccessToken
+				if strings.TrimSpace(refreshed.RefreshToken) != "" {
+					account.RefreshToken = refreshed.RefreshToken
+				}
+				if strings.TrimSpace(account.ExpiresAt) == "" {
+					account.ExpiresAt = refreshed.ExpiresAt
+				}
+			}
+		}
 		if strings.TrimSpace(account.AccessToken) == "" {
 			invalid++
 			continue
@@ -5754,6 +5767,9 @@ func (s *Server) callChatGPTCodex(call GatewayCall) (gin.H, *ProviderError) {
 }
 
 func (s *Server) callChatGPTCodexWithAccount(call GatewayCall, account OpenAIAccount, accessToken string) (gin.H, *ProviderError) {
+	if isAntigravityAccount(account) {
+		return s.callAntigravityWithAccount(call, account, accessToken)
+	}
 	if call.Channel.WebEndpoint {
 		return s.callChatGPTWebConversation(call, account, accessToken)
 	}
@@ -5835,6 +5851,9 @@ func (s *Server) streamChatGPTCodex(c *gin.Context, call GatewayCall) *ProviderE
 }
 
 func (s *Server) streamChatGPTCodexWithAccount(c *gin.Context, call GatewayCall, account OpenAIAccount, accessToken string) *ProviderError {
+	if isAntigravityAccount(account) {
+		return s.streamAntigravityWithAccount(c, call, account, accessToken)
+	}
 	if call.Channel.WebEndpoint {
 		return s.streamChatGPTWebConversation(c, call, account, accessToken)
 	}
@@ -7006,6 +7025,9 @@ func newUpstreamModelsRequest(endpoint, key string, anthropicAuth bool) (*http.R
 }
 
 func (s *Server) checkOpenAIAccount(account OpenAIAccount, channel Channel, allowProbe bool) OpenAIAccountCheckResult {
+	if isAntigravityAccount(account) {
+		return s.checkAntigravityAccount(account)
+	}
 	result := OpenAIAccountCheckResult{Status: "unchecked"}
 	accessToken, err := s.revealSecret(account.AccessToken)
 	if err != nil {
