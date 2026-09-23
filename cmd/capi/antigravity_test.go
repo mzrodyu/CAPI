@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -210,5 +211,44 @@ func TestAntigravityAuthorizeURL(t *testing.T) {
 	// A refresh token is only issued when cloud-platform scope is granted.
 	if !strings.Contains(query.Get("scope"), "cloud-platform") {
 		t.Fatalf("scope must request cloud-platform, got %q", query.Get("scope"))
+	}
+}
+
+func TestAntigravityUserAgentForIsStableAndSpread(t *testing.T) {
+	// Every UA in the pool must be a well-formed antigravity client string.
+	poolSet := map[string]bool{}
+	for _, ua := range antigravityUserAgents {
+		if !strings.HasPrefix(ua, "antigravity/hub/") {
+			t.Fatalf("unexpected UA format in pool: %q", ua)
+		}
+		poolSet[ua] = true
+	}
+
+	// The same account always reports the same UA (a real single-device user),
+	// and the chosen UA is always drawn from the pool.
+	account := OpenAIAccount{ID: "oaiacc_abc"}
+	first := antigravityUserAgentFor(account)
+	if !poolSet[first] {
+		t.Fatalf("UA %q not from pool", first)
+	}
+	for i := 0; i < 5; i++ {
+		if got := antigravityUserAgentFor(account); got != first {
+			t.Fatalf("UA not stable for same account: %q vs %q", got, first)
+		}
+	}
+
+	// Across many accounts the selection spreads over more than one platform,
+	// so the pool does not fingerprint as a single identical client.
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		seen[antigravityUserAgentFor(OpenAIAccount{ID: "oaiacc_" + strconv.Itoa(i)})] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("UA selection did not spread across the pool: %v", seen)
+	}
+
+	// No identifier at all falls back to the canonical UA rather than panicking.
+	if got := antigravityUserAgentFor(OpenAIAccount{}); got != antigravityUserAgent {
+		t.Fatalf("empty account should fall back to canonical UA, got %q", got)
 	}
 }

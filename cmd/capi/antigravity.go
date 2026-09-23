@@ -217,6 +217,7 @@ func (s *Server) refreshAntigravityAccount(refreshToken string) (OpenAIRefreshRe
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", antigravityUserAgent)
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
@@ -288,6 +289,7 @@ func (s *Server) exchangeAntigravityOAuthCode(code, verifier string) (OpenAIRefr
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", antigravityUserAgent)
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
@@ -342,7 +344,7 @@ func (s *Server) resolveAntigravityProject(account OpenAIAccount, accessToken st
 	if err != nil {
 		return "", err
 	}
-	s.setAntigravityHeaders(request, accessToken)
+	s.setAntigravityHeaders(request, account, accessToken)
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
@@ -373,10 +375,45 @@ func (s *Server) resolveAntigravityProject(account OpenAIAccount, accessToken st
 	return project, nil
 }
 
-func (s *Server) setAntigravityHeaders(request *http.Request, accessToken string) {
+// antigravityUserAgents is the pool of realistic Antigravity desktop-client
+// User-Agent strings. Real clients report their host platform, so spreading
+// pooled accounts across the platform axis (while keeping the known-good client
+// version) avoids every account fingerprinting as one identical client from a
+// single server IP. Only the os/arch suffix varies — inventing version numbers
+// would risk looking less real, not more.
+var antigravityUserAgents = []string{
+	"antigravity/hub/2.9.1 darwin/arm64",
+	"antigravity/hub/2.9.1 darwin/x64",
+	"antigravity/hub/2.9.1 win32/x64",
+	"antigravity/hub/2.9.1 linux/x64",
+}
+
+// antigravityUserAgentFor returns a stable User-Agent for an account: the same
+// account always reports the same client (mirroring a real single-device user),
+// while different accounts spread deterministically across the pool. A stable
+// per-account UA is deliberately chosen over per-request rotation — a single
+// account flipping platforms every call looks more bot-like, not less. Falls
+// back to the canonical UA when the account has no identifier yet.
+func antigravityUserAgentFor(account OpenAIAccount) string {
+	id := strings.TrimSpace(account.ID)
+	if id == "" {
+		id = strings.TrimSpace(account.AccountID)
+	}
+	if id == "" {
+		id = strings.TrimSpace(account.Email)
+	}
+	if id == "" {
+		return antigravityUserAgent
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(id))
+	return antigravityUserAgents[hasher.Sum32()%uint32(len(antigravityUserAgents))]
+}
+
+func (s *Server) setAntigravityHeaders(request *http.Request, account OpenAIAccount, accessToken string) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+accessToken)
-	request.Header.Set("User-Agent", antigravityUserAgent)
+	request.Header.Set("User-Agent", antigravityUserAgentFor(account))
 }
 
 // buildAntigravityPayload converts an OpenAI chat request into the Antigravity
@@ -621,7 +658,7 @@ func (s *Server) callAntigravityWithAccount(call GatewayCall, account OpenAIAcco
 	if err != nil {
 		return nil, &ProviderError{Status: http.StatusBadGateway, Code: "upstream_unreachable", Message: err.Error(), Type: "api_error"}
 	}
-	s.setAntigravityHeaders(request, accessToken)
+	s.setAntigravityHeaders(request, account, accessToken)
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
@@ -668,7 +705,7 @@ func (s *Server) streamAntigravityWithAccount(c *gin.Context, call GatewayCall, 
 	if err != nil {
 		return &ProviderError{Status: http.StatusBadGateway, Code: "upstream_unreachable", Message: err.Error(), Type: "api_error"}
 	}
-	s.setAntigravityHeaders(request, accessToken)
+	s.setAntigravityHeaders(request, account, accessToken)
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
