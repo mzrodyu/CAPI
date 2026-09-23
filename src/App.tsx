@@ -446,6 +446,7 @@ const navItems = [
 const providerOptions = [
   { value: "kiro", label: "Kiro / Amazon Q" },
   { value: "codex", label: "Codex / ChatGPT OAuth" },
+  { value: "antigravity", label: "Antigravity / Google" },
   { value: "cpa", label: "CPA / CLIProxyAPI" },
   { value: "openai", label: "OpenAI" },
   { value: "anthropic", label: "Anthropic / Claude" },
@@ -466,6 +467,8 @@ const defaultCodexModels = "gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, g
 const defaultOpenAIModels = "gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, gpt-image-2";
 const defaultCPAModels = "gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4, claude-sonnet-4, gemini-3.1-pro";
 const defaultKiroModels = "claude-sonnet-4.5, claude-sonnet-4, claude-haiku-4.5, claude-opus-4.5";
+const defaultAntigravityBaseURL = "https://daily-cloudcode-pa.googleapis.com";
+const defaultAntigravityModels = "claude-opus-4-6-thinking, claude-sonnet-4-6, gemini-3.8-flash-high, gemini-3.7-flash-high, gemini-3.6-flash-high, gemini-3-flash, gemini-pro-agent, gemini-3.1-pro-low, gpt-oss-120b-medium, gemini-3.1-flash-lite, gemini-3.5-flash-lite, gemini-3.1-flash-image";
 
 const channelTemplates = [
   {
@@ -488,6 +491,13 @@ const channelTemplates = [
     name: "Codex 账号池",
     baseUrl: defaultCodexBaseURL,
     models: defaultCodexModels.split(",").map((model) => model.trim())
+  },
+  {
+    provider: "antigravity",
+    label: "Antigravity 账号池",
+    name: "Antigravity 账号池",
+    baseUrl: defaultAntigravityBaseURL,
+    models: defaultAntigravityModels.split(",").map((model) => model.trim())
   },
   {
     provider: "cpa",
@@ -563,6 +573,7 @@ function accountErrorLabel(code?: string) {
 function defaultBaseURLForProvider(provider: string) {
   if (provider === "openai") return defaultOpenAIBaseURL;
   if (provider === "codex") return defaultCodexBaseURL;
+  if (provider === "antigravity") return defaultAntigravityBaseURL;
   if (provider === "cpa" || provider === "cliproxyapi") return defaultCPABaseURL;
   if (provider === "kiro") return defaultKiroBaseURL;
   return "";
@@ -733,6 +744,7 @@ function ProviderIcon({ provider }: { provider: string }) {
     );
   }
   const mark = provider === "codex" ? "C"
+    : provider === "antigravity" ? "G"
     : provider === "cpa" || provider === "cliproxyapi" ? "CPA"
     : provider === "anthropic" ? "A"
         : provider === "google" ? "✦"
@@ -3054,7 +3066,7 @@ function DrawingView({
   onStartOAuth: (channelId: string) => Promise<{ authorizeUrl: string; state: string; redirectUri: string }>;
   onCompleteOAuth: (channelId: string, payload: { callbackUrl?: string; code?: string; state?: string }) => Promise<unknown>;
 }) {
-  const drawingChannels = channels.filter((channel) => channel.provider === "codex" || channel.provider === "openai" || arrayOf(channel.models).some((model) => model.includes("image")));
+  const drawingChannels = channels.filter((channel) => channel.provider === "codex" || channel.provider === "antigravity" || channel.provider === "openai" || arrayOf(channel.models).some((model) => model.includes("image")));
   const [busy, setBusy] = useState("");
   const [accountVisibleCounts, setAccountVisibleCounts] = useState<Record<string, number>>({});
   const [accountFilters, setAccountFilters] = useState<Record<string, "all" | "attention" | "invalid" | "error" | "refreshable">>({});
@@ -3151,6 +3163,7 @@ function DrawingView({
         <div className="panel-toolbar">
           <span className="muted-inline">账号有两种来源，任选其一即可。</span>
           <button className="primary-button" onClick={() => onCreate(channelCreateFromTemplate("codex"))}>新增账号池渠道</button>
+          <button className="secondary-button" onClick={() => onCreate(channelCreateFromTemplate("antigravity"))}>新增 Antigravity 账号池</button>
         </div>
         <div className="source-guide">
           <div className="source-guide-item">

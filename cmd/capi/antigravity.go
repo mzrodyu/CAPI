@@ -98,6 +98,34 @@ func isAntigravityAccount(account OpenAIAccount) bool {
 	return isAntigravitySource(account.Source)
 }
 
+// isAntigravityChannel reports whether a channel is a first-class Antigravity
+// account pool (provider == "antigravity"), which routes through the Google
+// OAuth + Cloud Code path rather than the codex path.
+func isAntigravityChannel(channel Channel) bool {
+	return isAntigravitySource(channel.Provider)
+}
+
+// ensureAntigravityChannelLocked keeps an Antigravity channel's provider stable
+// and registers its model catalog. It mirrors ensureCodexChannelLocked but for
+// the Antigravity provider, so account import / periodic upkeep never rewrites
+// it to codex. Callers must hold s.mu.
+func (s *Server) ensureAntigravityChannelLocked(channel *Channel) bool {
+	if channel == nil {
+		return false
+	}
+	changed := false
+	if !strings.EqualFold(strings.TrimSpace(channel.Provider), "antigravity") {
+		channel.Provider = "antigravity"
+		changed = true
+	}
+	for _, modelID := range antigravityModelIDs() {
+		if s.ensureImportedModelLocked(modelID) {
+			changed = true
+		}
+	}
+	return changed
+}
+
 // checkAntigravityAccount validates an Antigravity account for the batch/health
 // check. It refreshes the Google token when needed and warms the project cache;
 // only a failed token refresh ejects the account, so a transient loadCodeAssist

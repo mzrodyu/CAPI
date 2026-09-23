@@ -3200,6 +3200,11 @@ func (s *Server) importOpenAIAccounts(c *gin.Context) {
 		}
 	}
 	for _, account := range accounts {
+		// Accounts imported into a first-class Antigravity pool are Antigravity
+		// accounts regardless of the file's declared source.
+		if isAntigravityChannel(*channel) && !isAntigravitySource(account.Source) {
+			account.Source = "antigravity"
+		}
 		if strings.TrimSpace(account.AccessToken) == "" && strings.TrimSpace(account.SessionToken) != "" {
 			account.AccessToken, account.ExpiresAt, _ = fetchChatGPTAccessTokenViaSessionCookie(account.SessionToken)
 		}
@@ -6934,6 +6939,9 @@ func chatCompletionUsageFromCodex(usage gin.H, messages []ChatMessage) gin.H {
 }
 
 func (s *Server) fetchUpstreamModelIDs(channel Channel, upstreamKey string) ([]string, error) {
+	if isAntigravityChannel(channel) {
+		return antigravityModelIDs(), nil
+	}
 	if isCodexChannel(channel) {
 		return codexChannelModelIDs(), nil
 	}
@@ -7932,6 +7940,9 @@ func (s *Server) streamOpenAICompatible(c *gin.Context, call GatewayCall) *Provi
 
 func (s *Server) shouldUseCompatibleProvider(channel Channel) bool {
 	if strings.EqualFold(s.providerMode, "compatible") {
+		return true
+	}
+	if isAntigravityChannel(channel) && len(channel.OpenAIAccounts) > 0 {
 		return true
 	}
 	if isCodexChannel(channel) && len(channel.OpenAIAccounts) > 0 {
@@ -9177,12 +9188,19 @@ func codexChannelModelIDs() []string {
 }
 
 func isCodexChannel(channel Channel) bool {
+	if isAntigravityChannel(channel) {
+		return false
+	}
 	return strings.EqualFold(strings.TrimSpace(channel.Provider), "codex") || len(channel.OpenAIAccounts) > 0
 }
 
 func (s *Server) ensureCodexChannelLocked(channel *Channel) bool {
 	if channel == nil {
 		return false
+	}
+	// An Antigravity account pool is its own provider; never rewrite it to codex.
+	if isAntigravityChannel(*channel) {
+		return s.ensureAntigravityChannelLocked(channel)
 	}
 	changed := false
 	if !strings.EqualFold(strings.TrimSpace(channel.Provider), "codex") {
@@ -9268,6 +9286,8 @@ func providerLabel(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "codex":
 		return "Codex"
+	case "antigravity", "agy", "google-antigravity":
+		return "Antigravity"
 	case "cpa", "cliproxyapi", "cli-proxy-api":
 		return "CLIProxyAPI"
 	case "openai":
@@ -10572,7 +10592,11 @@ func (s *Server) normalizeStateCollections() bool {
 			s.state.Channels[i].Models = []string{}
 			changed = true
 		}
-		if isCodexChannel(s.state.Channels[i]) {
+		if isAntigravityChannel(s.state.Channels[i]) {
+			if s.ensureAntigravityChannelLocked(&s.state.Channels[i]) {
+				changed = true
+			}
+		} else if isCodexChannel(s.state.Channels[i]) {
 			if s.ensureCodexChannelLocked(&s.state.Channels[i]) {
 				changed = true
 			}
