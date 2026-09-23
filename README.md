@@ -1,5 +1,7 @@
 # CAPI
 
+> 自托管的 **AI 聚合网关与反向代理**：OpenAI / Anthropic 接口兼容，把 **Antigravity、Codex、Kiro、Claude、Gemini、DeepSeek** 等多家供应商的多账号池统一成一个 OpenAI 兼容入口，内置额度控制、调用审计与渠道故障切换。
+
 CAPI 是一个轻量、清爽、面向大众用户的 AI 聚合网关。它兼容 OpenAI 风格接口，但不要求用户记住复杂路径：Base URL 可以直接填写 `https://shiliyuming.com`，不用写 `https://shiliyuming.com/v1`。
 
 目标是提供一个更轻、更清楚、更像 iOS 原生应用体验的模型网关。
@@ -10,6 +12,8 @@ CAPI 是一个轻量、清爽、面向大众用户的 AI 聚合网关。它兼�
 
 - OpenAI-compatible Chat Completions
 - Anthropic Messages 入站兼容 `/v1/messages`，可直接接入 Claude Code
+- 多供应商聚合：Antigravity、Codex、Kiro、OpenAI、Anthropic、Google Gemini、DeepSeek、OpenRouter 等
+- Antigravity / Codex / Kiro 账号池反向代理：粘贴 OAuth 凭据或 refresh token 入池，调用前自动换取 accessToken，并自动续期与健康检测
 - 一键接入各大 CLI 工具（Claude Code、Codex、Aider、Cline、opencode）
 - Base URL 可直接填写域名，兼容省略 `/v1`
 - Go + Gin 后端，一个服务托管 API 和前端
