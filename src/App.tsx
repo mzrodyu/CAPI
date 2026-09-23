@@ -4668,6 +4668,9 @@ function SettingsView({ models, channels, groups }: { models: ModelItem[]; chann
     maxLogs: 10000,
     maxQuotaEntries: 20000
   });
+  const [antigravityVersion, setAntigravityVersion] = useState("");
+  const [antigravityModelsText, setAntigravityModelsText] = useState("");
+  const [probingModels, setProbingModels] = useState(false);
   const [buildHealth, setBuildHealth] = useState<BuildHealth | null>(null);
   const [account, setAccount] = useState<AccountProfile | null>(null);
   const [accountUsername, setAccountUsername] = useState("");
@@ -4691,6 +4694,7 @@ function SettingsView({ models, channels, groups }: { models: ModelItem[]; chann
     { value: "admin", label: "管理员", description: "账号绑定" },
     { value: "discord", label: "Discord", description: "登录限制" },
     { value: "maintenance", label: "维护", description: "日志保留" },
+    { value: "antigravity", label: "Antigravity", description: "版本与模型" },
     { value: "backup", label: "备份", description: "导出恢复" }
   ];
   const activeSettingsTab = settingsTabs.find((tab) => tab.value === settingsTab) || settingsTabs[0];
@@ -4702,9 +4706,10 @@ function SettingsView({ models, channels, groups }: { models: ModelItem[]; chann
       fetchJson<{ checkIn: CheckInSettings }>("/api/settings/check-in"),
       fetchJson<{ account: AccountProfile; user: User }>("/api/account/me"),
       fetchJson<{ maintenance: MaintenanceSettings }>("/api/settings/maintenance"),
+      fetchJson<{ antigravity: { clientVersion: string; models: string[] } }>("/api/settings/antigravity"),
       fetchJson<BuildHealth>("/api/health")
     ])
-      .then(([discordData, authData, checkInData, accountData, maintenanceData, healthData]) => {
+      .then(([discordData, authData, checkInData, accountData, maintenanceData, antigravityData, healthData]) => {
         setDiscord(withBrowserDiscordDefaults(discordData.discord));
         setBlockedGuildText(arrayOf(discordData.discord.blockedGuildIds).join("\n"));
         setRegistrationEnabled(authData.auth.registrationEnabled);
@@ -4718,6 +4723,8 @@ function SettingsView({ models, channels, groups }: { models: ModelItem[]; chann
         setAccountEmail(accountData.account?.email || "");
         setDiscordUserId(accountData.account?.discordUserId || "");
         setMaintenance(maintenanceData.maintenance);
+        setAntigravityVersion(antigravityData.antigravity.clientVersion || "");
+        setAntigravityModelsText(arrayOf(antigravityData.antigravity.models).join("\n"));
         setBuildHealth(healthData);
       })
       .catch(() => setMessage("设置加载失败"));
@@ -4833,6 +4840,63 @@ function SettingsView({ models, channels, groups }: { models: ModelItem[]; chann
       setMessage(error instanceof Error ? error.message : "维护设置保存失败");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function parseModelLines(text: string) {
+    const seen = new Set<string>();
+    const models: string[] = [];
+    for (const line of text.split(/[\s,]+/)) {
+      const id = line.trim();
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        models.push(id);
+      }
+    }
+    return models;
+  }
+
+  async function saveAntigravitySettings() {
+    setSaving(true);
+    setMessage("");
+    try {
+      const data = await fetchJson<{ antigravity: { clientVersion: string; models: string[] } }>("/api/settings/antigravity", {
+        method: "PATCH",
+        body: JSON.stringify({ clientVersion: antigravityVersion.trim(), models: parseModelLines(antigravityModelsText) })
+      });
+      setAntigravityVersion(data.antigravity.clientVersion || "");
+      setAntigravityModelsText(arrayOf(data.antigravity.models).join("\n"));
+      setMessage("Antigravity 设置已保存");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Antigravity 设置保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function probeAntigravityModels() {
+    const channel = channels.find((item) => item.provider === "antigravity" && arrayOf(item.openaiAccounts).length > 0)
+      || channels.find((item) => item.provider === "antigravity");
+    if (!channel) {
+      setMessage("没有可用的 Antigravity 账号池，请先在 Antigravity 页新建并导入/授权账号");
+      return;
+    }
+    setProbingModels(true);
+    setMessage("");
+    try {
+      const data = await fetchJson<{ models: string[] }>(`/api/channels/${encodeURIComponent(channel.id)}/antigravity/available-models`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      // Merge discovered models with any the admin already typed, so a manual
+      // entry is never lost by a probe.
+      const merged = parseModelLines([antigravityModelsText, ...arrayOf(data.models)].join("\n"));
+      setAntigravityModelsText(merged.join("\n"));
+      setMessage(`已从上游拉取 ${arrayOf(data.models).length} 个模型，确认后点击保存生效`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "拉取上游模型失败");
+    } finally {
+      setProbingModels(false);
     }
   }
 
@@ -5039,6 +5103,42 @@ response = client.chat.completions.create(
             <span role="status">{message}</span>
             <button type="button" className="primary-button" disabled={saving} onClick={saveMaintenanceSettings}>
               {saving ? "保存中" : "保存维护设置"}
+            </button>
+          </div>
+        </div>
+      </Panel>
+      )}
+
+      {settingsTab === "antigravity" && (
+      <Panel title="Antigravity 设置">
+        <div className="settings-form-grid">
+          <label className="settings-form-wide">
+            <span>客户端版本</span>
+            <input
+              type="text"
+              value={antigravityVersion}
+              onChange={(event) => setAntigravityVersion(event.target.value)}
+              placeholder="2.9.1（留空用内置默认）"
+            />
+            <small>用于伪装 User-Agent：antigravity/hub/&lt;版本&gt; &lt;平台&gt;。改完保存即时生效，无需重新发版。</small>
+          </label>
+          <label className="settings-form-wide">
+            <span>可选模型</span>
+            <textarea
+              value={antigravityModelsText}
+              onChange={(event) => setAntigravityModelsText(event.target.value)}
+              placeholder="每行一个模型 ID，例如 claude-sonnet-4-6"
+              rows={10}
+            />
+            <small>路由可用的 Antigravity 模型清单。「从上游拉取」会用账号池里一个账号调 fetchAvailableModels 拉取真实可用模型并合并进来，确认后点保存生效。留空则回退到内置默认清单。</small>
+          </label>
+          <div className="settings-save-row">
+            <span role="status">{message}</span>
+            <button type="button" className="secondary-button" disabled={probingModels || saving} onClick={probeAntigravityModels}>
+              {probingModels ? "拉取中" : "从上游拉取模型"}
+            </button>
+            <button type="button" className="primary-button" disabled={saving || probingModels} onClick={saveAntigravitySettings}>
+              {saving ? "保存中" : "保存设置"}
             </button>
           </div>
         </div>

@@ -215,25 +215,20 @@ func TestAntigravityAuthorizeURL(t *testing.T) {
 }
 
 func TestAntigravityUserAgentForIsStableAndSpread(t *testing.T) {
-	// Every UA in the pool must be a well-formed antigravity client string.
+	// The same account always reports the same platform (a real single-device
+	// user), and the chosen platform is always drawn from the pool.
 	poolSet := map[string]bool{}
-	for _, ua := range antigravityUserAgents {
-		if !strings.HasPrefix(ua, "antigravity/hub/") {
-			t.Fatalf("unexpected UA format in pool: %q", ua)
-		}
-		poolSet[ua] = true
+	for _, platform := range antigravityPlatforms {
+		poolSet[platform] = true
 	}
-
-	// The same account always reports the same UA (a real single-device user),
-	// and the chosen UA is always drawn from the pool.
 	account := OpenAIAccount{ID: "oaiacc_abc"}
-	first := antigravityUserAgentFor(account)
+	first := antigravityPlatformFor(account)
 	if !poolSet[first] {
-		t.Fatalf("UA %q not from pool", first)
+		t.Fatalf("platform %q not from pool", first)
 	}
 	for i := 0; i < 5; i++ {
-		if got := antigravityUserAgentFor(account); got != first {
-			t.Fatalf("UA not stable for same account: %q vs %q", got, first)
+		if got := antigravityPlatformFor(account); got != first {
+			t.Fatalf("platform not stable for same account: %q vs %q", got, first)
 		}
 	}
 
@@ -241,14 +236,53 @@ func TestAntigravityUserAgentForIsStableAndSpread(t *testing.T) {
 	// so the pool does not fingerprint as a single identical client.
 	seen := map[string]bool{}
 	for i := 0; i < 200; i++ {
-		seen[antigravityUserAgentFor(OpenAIAccount{ID: "oaiacc_" + strconv.Itoa(i)})] = true
+		seen[antigravityPlatformFor(OpenAIAccount{ID: "oaiacc_" + strconv.Itoa(i)})] = true
 	}
 	if len(seen) < 2 {
-		t.Fatalf("UA selection did not spread across the pool: %v", seen)
+		t.Fatalf("platform selection did not spread across the pool: %v", seen)
 	}
 
-	// No identifier at all falls back to the canonical UA rather than panicking.
-	if got := antigravityUserAgentFor(OpenAIAccount{}); got != antigravityUserAgent {
-		t.Fatalf("empty account should fall back to canonical UA, got %q", got)
+	// The UA carries the configured version and a pool platform; an empty version
+	// falls back to the default, and an identifierless account uses platform[0].
+	ua := antigravityUserAgentFor("3.0.0", account)
+	if !strings.HasPrefix(ua, "antigravity/hub/3.0.0 ") {
+		t.Fatalf("UA should carry the configured version, got %q", ua)
+	}
+	if got := antigravityUserAgentFor("", OpenAIAccount{}); got != "antigravity/hub/"+antigravityDefaultClientVersion+" "+antigravityPlatforms[0] {
+		t.Fatalf("empty version + empty account should yield the canonical default UA, got %q", got)
+	}
+}
+
+func TestAntigravityVersionValid(t *testing.T) {
+	for _, ok := range []string{"2.9.1", "2.10.0", "3.0.0-beta", "3.0.0+build.2", "12"} {
+		if !antigravityVersionValid(ok) {
+			t.Fatalf("version %q should be valid", ok)
+		}
+	}
+	for _, bad := range []string{"2.9.1 darwin", "", "2.9.1;rm -rf", "\n2.9", "版本"} {
+		if antigravityVersionValid(bad) {
+			t.Fatalf("version %q should be rejected", bad)
+		}
+	}
+}
+
+func TestPickAntigravityProbeAccount(t *testing.T) {
+	channel := Channel{OpenAIAccounts: []OpenAIAccount{
+		{ID: "a", Status: "invalid", AccessToken: "x"},
+		{ID: "b", Status: "healthy", RefreshToken: "r"},
+		{ID: "c", Status: "unchecked"}, // no credential
+	}}
+	// Prefers a healthy account with a credential.
+	if account, ok := pickAntigravityProbeAccount(channel, ""); !ok || account.ID != "b" {
+		t.Fatalf("expected healthy account b, got %q ok=%v", account.ID, ok)
+	}
+	// Honors an explicit account selection even if not healthy.
+	if account, ok := pickAntigravityProbeAccount(channel, "a"); !ok || account.ID != "a" {
+		t.Fatalf("expected explicitly selected account a, got %q ok=%v", account.ID, ok)
+	}
+	// A pool with no usable credentials yields nothing.
+	empty := Channel{OpenAIAccounts: []OpenAIAccount{{ID: "c", Status: "unchecked"}}}
+	if _, ok := pickAntigravityProbeAccount(empty, ""); ok {
+		t.Fatalf("expected no probe account when none carry a credential")
 	}
 }
