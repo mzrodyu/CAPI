@@ -957,6 +957,8 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	admin.POST("/channels/:id/import-openai-accounts", s.importOpenAIAccounts)
 	admin.POST("/channels/:id/openai-oauth/start", s.startOpenAIOAuth)
 	admin.POST("/channels/:id/openai-oauth/complete", s.completeOpenAIOAuth)
+	admin.POST("/channels/:id/antigravity-oauth/start", s.startAntigravityOAuth)
+	admin.POST("/channels/:id/antigravity-oauth/complete", s.completeAntigravityOAuth)
 	admin.POST("/channels/:id/openai-accounts/check", s.checkOpenAIAccounts)
 	admin.POST("/channels/:id/openai-accounts/deduplicate", s.deduplicateOpenAIAccounts)
 	admin.DELETE("/channels/:id/openai-accounts/:accountId", s.deleteOpenAIAccount)
@@ -3496,6 +3498,142 @@ func (s *Server) completeOpenAIOAuth(c *gin.Context) {
 		ClientProfile: codexClientProfileForImport("oauth", ""),
 		ImportedAt:    time.Now().UTC().Format(time.RFC3339),
 		Status:        "unchecked",
+	}
+	channel.OpenAIAccounts = append(channel.OpenAIAccounts, stored)
+	s.saveStateLocked()
+
+	c.JSON(http.StatusCreated, gin.H{
+		"account": publicOpenAIAccount(stored),
+		"channel": publicChannel(*channel),
+	})
+}
+
+// startAntigravityOAuth begins a Google OAuth (PKCE) local authorization for an
+// Antigravity channel. It mirrors startOpenAIOAuth but targets Google's consent
+// endpoint; the resulting account carries a Google refresh token.
+func (s *Server) startAntigravityOAuth(c *gin.Context) {
+	s.mu.Lock()
+	channel := s.findChannel(c.Param("id"))
+	if channel == nil {
+		s.mu.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "Channel not found"}})
+		return
+	}
+	s.mu.Unlock()
+
+	verifier, challenge, err := newPKCEPair()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "Failed to create PKCE challenge"}})
+		return
+	}
+	state := randomHex(24)
+
+	s.mu.Lock()
+	s.pruneOpenAIOAuthFlowsLocked()
+	s.openAIOAuthFlows[state] = openAIOAuthFlow{CodeVerifier: verifier, CreatedAt: time.Now().UTC()}
+	s.mu.Unlock()
+
+	c.JSON(http.StatusOK, gin.H{
+		"authorizeUrl": antigravityAuthorizeURL(challenge, state),
+		"state":        state,
+		"redirectUri":  antigravityOAuthRedirectURI,
+	})
+}
+
+// completeAntigravityOAuth finishes the Google OAuth flow: it verifies the state,
+// exchanges the code with the stored PKCE verifier, and stores the resulting
+// Antigravity account (with its Google refresh token) in the channel's pool.
+func (s *Server) completeAntigravityOAuth(c *gin.Context) {
+	var body struct {
+		CallbackURL string `json:"callbackUrl"`
+		Code        string `json:"code"`
+		State       string `json:"state"`
+	}
+	_ = c.ShouldBindJSON(&body)
+
+	code := strings.TrimSpace(body.Code)
+	state := strings.TrimSpace(body.State)
+	if raw := strings.TrimSpace(body.CallbackURL); raw != "" {
+		if parsed, err := url.Parse(raw); err == nil {
+			query := parsed.Query()
+			if v := strings.TrimSpace(query.Get("code")); v != "" {
+				code = v
+			}
+			if v := strings.TrimSpace(query.Get("state")); v != "" {
+				state = v
+			}
+		}
+	}
+	if code == "" {
+		validationError(c, "缺少授权 code，请粘贴完整回调地址")
+		return
+	}
+
+	s.mu.Lock()
+	channel := s.findChannel(c.Param("id"))
+	if channel == nil {
+		s.mu.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "Channel not found"}})
+		return
+	}
+	flow, ok := s.openAIOAuthFlows[state]
+	if ok {
+		delete(s.openAIOAuthFlows, state)
+	}
+	s.mu.Unlock()
+	if !ok {
+		validationError(c, "授权状态已失效，请重新发起授权")
+		return
+	}
+
+	tokens, err := s.exchangeAntigravityOAuthCode(code, flow.CodeVerifier)
+	if err != nil {
+		s.openAIError(c, http.StatusBadGateway, "oauth_exchange_failed", err.Error(), "api_error", nil)
+		return
+	}
+
+	email, name := jwtEmailName(tokens.IDToken)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	channel = s.findChannel(c.Param("id"))
+	if channel == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "Channel not found"}})
+		return
+	}
+	s.ensureAntigravityChannelLocked(channel)
+
+	protectedAccess, err := s.protectSecret(tokens.AccessToken)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "Failed to protect access token"}})
+		return
+	}
+	protectedRefresh := ""
+	if strings.TrimSpace(tokens.RefreshToken) != "" {
+		if protectedRefresh, err = s.protectSecret(tokens.RefreshToken); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "Failed to protect refresh token"}})
+			return
+		}
+	}
+	protectedID := ""
+	if strings.TrimSpace(tokens.IDToken) != "" {
+		if protectedID, err = s.protectSecret(tokens.IDToken); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "Failed to protect id token"}})
+			return
+		}
+	}
+	stored := OpenAIAccount{
+		ID:           newID("oaiacc"),
+		Name:         firstNonEmptyString(name, email),
+		Email:        email,
+		AccessToken:  protectedAccess,
+		RefreshToken: protectedRefresh,
+		IDToken:      protectedID,
+		ExpiresAt:    tokens.ExpiresAt,
+		LastRefresh:  now(),
+		Source:       "antigravity",
+		ImportedAt:   time.Now().UTC().Format(time.RFC3339),
+		Status:       "unchecked",
 	}
 	channel.OpenAIAccounts = append(channel.OpenAIAccounts, stored)
 	s.saveStateLocked()

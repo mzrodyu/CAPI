@@ -28,6 +28,14 @@ const (
 	antigravityOAuthClientID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	antigravityTokenEndpoint = "https://oauth2.googleapis.com/token"
 
+	// Local-authorization (loopback) OAuth. The admin opens the Google consent
+	// page, logs in, and pastes the localhost callback URL back — the same
+	// copy-paste flow codex uses. The Antigravity client is a Google "Desktop
+	// app" OAuth client, so Google accepts any http://localhost redirect.
+	antigravityOAuthAuthorizeEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
+	antigravityOAuthRedirectURI       = "http://localhost:8788/oauth2callback"
+	antigravityOAuthScope             = "openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cloud-platform"
+
 	// Consumer credentials default to the daily host for generateContent while
 	// project discovery (loadCodeAssist) goes to the production host.
 	antigravityBaseURLDaily = "https://daily-cloudcode-pa.googleapis.com"
@@ -238,6 +246,81 @@ func (s *Server) refreshAntigravityAccount(refreshToken string) (OpenAIRefreshRe
 	result := OpenAIRefreshResult{
 		AccessToken:  strings.TrimSpace(body.AccessToken),
 		RefreshToken: strings.TrimSpace(body.RefreshToken),
+	}
+	if body.ExpiresIn > 0 {
+		result.ExpiresAt = time.Now().Add(time.Duration(body.ExpiresIn) * time.Second).UTC().Format(time.RFC3339Nano)
+	}
+	return result, nil
+}
+
+// antigravityAuthorizeURL builds the Google OAuth consent URL for the local
+// authorization flow. access_type=offline + prompt=consent force Google to
+// return a refresh_token even when the account has consented before.
+func antigravityAuthorizeURL(challenge, state string) string {
+	params := url.Values{}
+	params.Set("response_type", "code")
+	params.Set("client_id", antigravityOAuthClientID)
+	params.Set("redirect_uri", antigravityOAuthRedirectURI)
+	params.Set("scope", antigravityOAuthScope)
+	params.Set("code_challenge", challenge)
+	params.Set("code_challenge_method", "S256")
+	params.Set("access_type", "offline")
+	params.Set("prompt", "consent")
+	params.Set("state", state)
+	return antigravityOAuthAuthorizeEndpoint + "?" + params.Encode()
+}
+
+// exchangeAntigravityOAuthCode exchanges a Google authorization code + PKCE
+// verifier for Antigravity (Cloud Code) tokens, mirroring the refresh call but
+// with grant_type=authorization_code.
+func (s *Server) exchangeAntigravityOAuthCode(code, verifier string) (OpenAIRefreshResult, error) {
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("client_id", antigravityOAuthClientID)
+	form.Set("client_secret", antigravityOAuthClientSecret)
+	form.Set("code", code)
+	form.Set("redirect_uri", antigravityOAuthRedirectURI)
+	form.Set("code_verifier", verifier)
+
+	request, err := http.NewRequest(http.MethodPost, antigravityTokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return OpenAIRefreshResult{}, err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Accept", "application/json")
+
+	response, err := s.httpClient.Do(request)
+	if err != nil {
+		return OpenAIRefreshResult{}, err
+	}
+	defer response.Body.Close()
+
+	content, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return OpenAIRefreshResult{}, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		providerErr := providerErrorFromUpstream(response.StatusCode, content)
+		return OpenAIRefreshResult{}, fmt.Errorf("%s", providerErr.Message)
+	}
+
+	var body struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		TokenType    string `json:"token_type"`
+	}
+	if err := json.Unmarshal(content, &body); err != nil {
+		return OpenAIRefreshResult{}, err
+	}
+	if strings.TrimSpace(body.AccessToken) == "" {
+		return OpenAIRefreshResult{}, fmt.Errorf("授权响应缺少 access_token")
+	}
+	result := OpenAIRefreshResult{
+		AccessToken:  strings.TrimSpace(body.AccessToken),
+		RefreshToken: strings.TrimSpace(body.RefreshToken),
+		IDToken:      strings.TrimSpace(body.IDToken),
 	}
 	if body.ExpiresIn > 0 {
 		result.ExpiresAt = time.Now().Add(time.Duration(body.ExpiresIn) * time.Second).UTC().Format(time.RFC3339Nano)
