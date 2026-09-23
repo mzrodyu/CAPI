@@ -370,7 +370,8 @@ type IconName =
   | "check"
   | "moon"
   | "sun"
-  | "plus";
+  | "plus"
+  | "more";
 
 const iconPaths: Record<IconName, string> = {
   home: "M3 10.5 12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z",
@@ -388,7 +389,8 @@ const iconPaths: Record<IconName, string> = {
   check: "M20 6 9 17l-5-5",
   moon: "M21 12.8A8.5 8.5 0 1 1 11.2 3 6.5 6.5 0 0 0 21 12.8Z",
   sun: "M12 4V2M12 22v-2M4.93 4.93 3.52 3.52M20.48 20.48l-1.41-1.41M4 12H2M22 12h-2M4.93 19.07l-1.41 1.41M20.48 3.52l-1.41 1.41M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z",
-  plus: "M12 5v14M5 12h14"
+  plus: "M12 5v14M5 12h14",
+  more: "M5 12h0.01M12 12h0.01M19 12h0.01"
 };
 
 function Icon({ name }: { name: IconName }) {
@@ -1305,28 +1307,33 @@ function App() {
             <h1>{navItems.find((item) => item.id === active)?.label}</h1>
           </div>
           <div className="topbar-actions">
-            <SegmentedControl
-              value={density}
-              options={[
-                { value: "comfortable", label: "舒适" },
-                { value: "compact", label: "紧凑" }
-              ]}
-              onChange={(value) => setDensity(value as "comfortable" | "compact")}
-            />
-            <button className="theme-toggle" aria-label="切换暗色模式" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
-              <Icon name={theme === "dark" ? "sun" : "moon"} />
-              <span>{theme === "dark" ? "浅色" : "暗色"}</span>
+            <button className="primary-button" onClick={() => loadAll().catch((error) => handleLoadError(error, "刷新失败"))}>
+              刷新
             </button>
-          <button className="primary-button" onClick={() => loadAll().catch((error) => handleLoadError(error, "刷新失败"))}>
-            刷新
-          </button>
-          <button className="secondary-button home-link" onClick={() => setSurface("home")}>
-            首页
-          </button>
-          <button className="secondary-button" onClick={logout}>
-            退出
-          </button>
-        </div>
+            <button className="icon-button" aria-label="切换暗色模式" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+              <Icon name={theme === "dark" ? "sun" : "moon"} />
+            </button>
+            <details className="topbar-menu">
+              <summary className="icon-button" aria-label="更多操作">
+                <Icon name="more" />
+              </summary>
+              <div className="topbar-menu-panel">
+                <div className="topbar-menu-row">
+                  <span>密度</span>
+                  <SegmentedControl
+                    value={density}
+                    options={[
+                      { value: "comfortable", label: "舒适" },
+                      { value: "compact", label: "紧凑" }
+                    ]}
+                    onChange={(value) => setDensity(value as "comfortable" | "compact")}
+                  />
+                </div>
+                <button className="topbar-menu-item" onClick={() => setSurface("home")}>首页</button>
+                <button className="topbar-menu-item" onClick={logout}>退出</button>
+              </div>
+            </details>
+          </div>
       </header>
 
         {active === "overview" && (
@@ -3256,9 +3263,16 @@ function DrawingView({
                   <div>
                     <strong>{channel.name}</strong>
                     <span>{channel.baseUrl || defaultBaseURLForProvider(channel.provider) || defaultCodexBaseURL}</span>
-                    <small>账号 {accounts.length} 个，可用 {healthy}，无效 {invalid}，未验证 {unchecked}</small>
-					<small>可续期 {refreshable} · 网页会话 {browserSession} · 仅 Token {accessOnly}</small>
-					<small>自动检测 {channel.lastCheckedAt ? formatDate(channel.lastCheckedAt) : "等待首次检测"}</small>
+                    <div className="stat-row">
+                      <span className="stat"><b>{accounts.length}</b> 账号</span>
+                      <span className="stat ok"><b>{healthy}</b> 可用</span>
+                      <span className="stat bad"><b>{invalid}</b> 无效</span>
+                      <span className="stat warn"><b>{unchecked}</b> 未验证</span>
+                      <span className="stat"><b>{refreshable}</b> 可续期</span>
+                      <span className="stat"><b>{browserSession}</b> 网页会话</span>
+                      <span className="stat"><b>{accessOnly}</b> 仅 Token</span>
+                      <span className="stat">自动检测 {channel.lastCheckedAt ? formatDate(channel.lastCheckedAt) : "等待首次检测"}</span>
+                    </div>
                   </div>
                   <div className="channel-card-head-actions">
                     <Badge tone={channel.status}>{statusLabel(channel.status)}</Badge>
@@ -3292,12 +3306,6 @@ function DrawingView({
 						<button key={value} type="button" className={filter === value ? "selected" : ""} onClick={() => setAccountFilters((current) => ({ ...current, [channel.id]: value as "all" | "attention" | "invalid" | "error" | "refreshable" }))}>{label}</button>
 					))}
 				</div>
-                <div className="metrics-grid">
-                  <Metric label="账号总数" value={accounts.length} />
-                  <Metric label="可用账号" value={healthy} />
-                  <Metric label="无效账号" value={invalid} />
-                  <Metric label="未验证账号" value={unchecked} />
-                </div>
                 <div className="drawing-channel-models">
                   {arrayOf(channel.models).length ? arrayOf(channel.models).map((model) => (
                     <span key={model}>{model}</span>

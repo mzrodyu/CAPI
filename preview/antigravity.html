@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light" data-density="comfortable">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CAPI · 布局预览（Antigravity）</title>
+<style>
+/* ============ tokens ============ */
+:root{
+  /* palette (theme-independent) */
+  --blue:#007aff; --green:#34c759; --red:#ff3b30; --orange:#ff9500; --teal:#30b0c7; --violet:#8b5cf6;
+  /* spacing (4px base) */
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px;
+  --space-6:24px; --space-8:32px; --space-10:40px;
+  /* radius */
+  --radius-xs:6px; --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-xl:20px; --radius-2xl:24px; --radius-pill:999px;
+  /* type */
+  --text-caption:12px; --text-footnote:13px; --text-subhead:15px; --text-body:17px;
+  --text-title3:20px; --text-title2:22px; --text-title1:28px; --text-large:34px;
+  --z-modal:1000; --z-toast:1100; --control-height:38px;
+  --nav-w:260px;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+/* semantic — light */
+:root{
+  --bg:#f2f2f7; --surface-solid:#fff; --group:#f1f2f4;
+  --text:#1d1d1f; --muted:#6e6e73; --hairline:rgba(60,60,67,.12); --hairline-strong:rgba(60,60,67,.18);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.04);
+  --shadow-md:0 2px 8px rgba(0,0,0,.04),0 12px 32px rgba(0,0,0,.06);
+  --glass:linear-gradient(158deg,rgba(255,255,255,.92),rgba(255,255,255,.66));
+  --glass-border:rgba(255,255,255,.72);
+  --glass-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 1px 2px rgba(17,24,39,.04),0 12px 34px rgba(17,24,39,.08);
+  --sidebar:rgba(255,255,255,.72);
+}
+/* semantic — dark */
+:root[data-theme="dark"]{
+  --bg:#0a0a0c; --surface-solid:#161618; --group:rgba(255,255,255,.05);
+  --text:#f5f5f7; --muted:#8e8e93; --hairline:rgba(255,255,255,.07); --hairline-strong:rgba(255,255,255,.12);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+  --shadow-md:0 2px 8px rgba(0,0,0,.25),0 16px 40px rgba(0,0,0,.4);
+  --glass:linear-gradient(158deg,rgba(58,58,66,.7),rgba(26,26,32,.62));
+  --glass-border:rgba(255,255,255,.1);
+  --glass-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.3),0 18px 44px rgba(0,0,0,.5);
+  --sidebar:rgba(20,20,24,.68);
+  color-scheme:dark;
+}
+:root[data-density="compact"]{ --row-height:46px; --control-height:34px; }
+:root{ --row-height:56px; }
+/* ============ base ============ */
+*{box-sizing:border-box}
+body{margin:0;color:var(--text);background:var(--bg);min-height:100vh}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:radial-gradient(1100px 620px at 12% -8%,rgba(0,122,255,.10),transparent 60%),
+             radial-gradient(900px 560px at 108% 6%,rgba(48,176,199,.10),transparent 55%);}
+button{font:inherit;border:0;background:transparent;cursor:pointer;color:inherit}
+input,select{font:inherit;color:inherit}
+/* ============ layout ============ */
+.app-shell{display:grid;grid-template-columns:var(--nav-w) minmax(0,1fr);min-height:100vh}
+.sidebar{position:sticky;top:0;height:100vh;padding:var(--space-4) var(--space-3);
+  background:var(--sidebar);backdrop-filter:blur(24px) saturate(180%);
+  border-right:1px solid var(--hairline);display:flex;flex-direction:column;gap:var(--space-2)}
+.brand{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) var(--space-2) var(--space-5)}
+.brand-mark{width:40px;height:40px;border-radius:var(--radius-md);display:grid;place-items:center;
+  color:#fff;font-weight:800;font-size:var(--text-title3);
+  background:linear-gradient(150deg,#1f2024,#0b0b0d);box-shadow:var(--shadow-sm)}
+:root[data-theme="dark"] .brand-mark{background:linear-gradient(150deg,#f5f5f7,#c7c7cc);color:#0a0a0c}
+.brand-text{display:flex;flex-direction:column;line-height:1.2}
+.brand-text strong{font-size:var(--text-subhead)}
+.brand-text span{font-size:var(--text-caption);color:var(--muted)}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav-item{display:flex;align-items:center;gap:var(--space-3);min-height:42px;padding:0 var(--space-3);
+  border-radius:var(--radius-md);color:var(--muted);font-size:var(--text-subhead);font-weight:500;
+  transition:background .16s ease,color .16s ease}
+.nav-item:hover{background:var(--group);color:var(--text)}
+.nav-item.active{background:var(--surface-solid);color:var(--text);font-weight:600;
+  box-shadow:var(--shadow-sm);border:1px solid var(--hairline)}
+.nav-item svg{width:19px;height:19px;flex:none}
+.sidebar-footer{margin-top:auto;display:flex;align-items:center;justify-content:space-between;
+  padding:var(--space-3);border-radius:var(--radius-md);background:var(--group);font-size:var(--text-caption)}
+.sidebar-footer span{color:var(--muted)}
+.sidebar-footer strong{display:inline-flex;align-items:center;gap:6px;color:var(--green)}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px color-mix(in srgb,currentColor 22%,transparent)}
+.content{min-width:0;padding:var(--space-6) var(--space-8) var(--space-10);display:flex;flex-direction:column;gap:var(--space-6)}
+.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;
+  margin:calc(var(--space-6)*-1) calc(var(--space-8)*-1) 0;padding:var(--space-5) var(--space-8) var(--space-4);
+  background:color-mix(in srgb,var(--bg) 74%,transparent);backdrop-filter:blur(22px) saturate(180%);
+  border-bottom:1px solid var(--hairline)}
+.topbar .eyebrow{margin:0 0 3px;font-size:var(--text-caption);letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.topbar h1{margin:0;font-size:var(--text-title1);font-weight:700;letter-spacing:-.01em}
+.topbar-actions{display:flex;align-items:center;gap:var(--space-2)}
+/* ============ buttons ============ */
+.btn{min-height:var(--control-height);padding:0 var(--space-4);border-radius:var(--radius-pill);
+  font-size:var(--text-footnote);font-weight:600;display:inline-flex;align-items:center;gap:6px;
+  transition:transform .12s ease,background .16s ease,box-shadow .16s ease}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:var(--blue);color:#fff;box-shadow:0 6px 16px rgba(0,122,255,.28)}
+.btn-secondary{background:var(--surface-solid);color:var(--text);border:1px solid var(--hairline);box-shadow:var(--shadow-sm)}
+.btn-danger{background:color-mix(in srgb,var(--red) 12%,transparent);color:var(--red)}
+.btn-sm{min-height:30px;padding:0 var(--space-3);font-size:var(--text-caption)}
+.btn-icon{width:var(--control-height);height:var(--control-height);padding:0;justify-content:center;
+  border-radius:var(--radius-pill);background:var(--surface-solid);border:1px solid var(--hairline);box-shadow:var(--shadow-sm)}
+.btn-icon svg{width:18px;height:18px}
+/* ============ panel / card ============ */
+.panel,.channel-card,.source-guide-item{background:var(--glass);border:1px solid var(--glass-border);
+  box-shadow:var(--glass-shadow);backdrop-filter:blur(26px) saturate(185%)}
+.panel{border-radius:var(--radius-2xl);padding:var(--space-6)}
+.panel-title{margin:0 0 var(--space-4);font-size:var(--text-title3);font-weight:700}
+.panel-toolbar{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);margin-bottom:var(--space-4)}
+.panel-toolbar .hint{color:var(--muted);font-size:var(--text-footnote)}
+.source-guide{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3);margin-bottom:var(--space-5)}
+.source-guide-item{border-radius:var(--radius-lg);padding:var(--space-4)}
+.source-guide-item strong{display:block;font-size:var(--text-subhead);margin-bottom:4px}
+.source-guide-item span{color:var(--muted);font-size:var(--text-footnote);line-height:1.5}
+.channel-card{border-radius:var(--radius-xl);padding:var(--space-5);display:flex;flex-direction:column;gap:var(--space-4)}
+.channel-card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-4);flex-wrap:wrap}
+.channel-card-head .name{font-size:var(--text-title3);font-weight:700}
+.channel-card-head .url{display:block;color:var(--muted);font-size:var(--text-footnote);margin:2px 0 var(--space-3)}
+/* inline stat chips (replaces the 4 big Metric boxes) */
+.stat-row{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.stat{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-footnote);color:var(--muted);
+  background:var(--group);border-radius:var(--radius-pill);padding:4px 10px}
+.stat b{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums}
+.stat.ok b{color:var(--green)} .stat.bad b{color:var(--red)} .stat.warn b{color:var(--orange)}
+.head-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+/* ============ badge ============ */
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-caption);font-weight:600;
+  padding:4px 10px;border-radius:var(--radius-pill);background:var(--group);color:var(--muted)}
+.badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge.ok{color:var(--green);background:color-mix(in srgb,var(--green) 14%,transparent)}
+.badge.bad{color:var(--red);background:color-mix(in srgb,var(--red) 14%,transparent)}
+.badge.warn{color:var(--orange);background:color-mix(in srgb,var(--orange) 14%,transparent)}
+/* ============ filter bar + pill-group (the ONE control) ============ */
+.filter-bar{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+.search{flex:1;min-width:200px;height:var(--control-height);padding:0 var(--space-4);
+  border-radius:var(--radius-pill);background:var(--surface-solid);border:1px solid var(--hairline);
+  box-shadow:var(--shadow-sm);outline:none}
+.search:focus{border-color:var(--blue);box-shadow:0 0 0 3px color-mix(in srgb,var(--blue) 18%,transparent)}
+.select{height:var(--control-height);padding:0 var(--space-4);border-radius:var(--radius-pill);
+  background:var(--surface-solid);border:1px solid var(--hairline);box-shadow:var(--shadow-sm);outline:none}
+.pill-group{display:inline-flex;gap:2px;padding:3px;border-radius:var(--radius-pill);
+  background:var(--group);border:1px solid var(--hairline)}
+.pill-group button{padding:5px 12px;border-radius:var(--radius-pill);font-size:var(--text-caption);
+  font-weight:600;color:var(--muted);transition:background .16s,color .16s}
+.pill-group button:hover{color:var(--text)}
+.pill-group button.selected{background:var(--surface-solid);color:var(--text);box-shadow:var(--shadow-sm)}
+/* ============ model chips ============ */
+.model-chips{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.model-chips span{font-size:var(--text-caption);font-weight:600;color:var(--muted);
+  padding:5px 11px;border-radius:var(--radius-sm);background:var(--group);
+  border:1px solid var(--hairline);font-family:ui-monospace,"SF Mono",Menlo,monospace}
+/* ============ account rows (flat, hairline dividers — no nested glass) ============ */
+.account-list{border:1px solid var(--hairline);border-radius:var(--radius-lg);overflow:hidden;background:var(--surface-solid)}
+:root[data-theme="dark"] .account-list{background:rgba(255,255,255,.02)}
+.account-row{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);
+  min-height:var(--row-height);padding:var(--space-3) var(--space-4)}
+.account-row+.account-row{border-top:1px solid var(--hairline)}
+.account-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.account-title{display:flex;align-items:center;gap:var(--space-2)}
+.account-title strong{font-size:var(--text-subhead);font-weight:600}
+.source-tag{font-size:11px;font-weight:600;color:var(--violet);padding:2px 7px;border-radius:var(--radius-xs);
+  background:color-mix(in srgb,var(--violet) 12%,transparent)}
+.account-sub{font-size:var(--text-caption);color:var(--muted)}
+.account-meta{display:flex;align-items:center;gap:var(--space-2);flex:none}
+.quota{display:flex;gap:var(--space-2);align-items:center;margin-left:auto;padding-right:var(--space-4)}
+.quota-bar{width:66px}
+.quota-bar span{display:block;font-size:10px;color:var(--muted);margin-bottom:3px}
+.quota-track{height:5px;border-radius:var(--radius-pill);background:var(--group);overflow:hidden}
+.quota-fill{height:100%;border-radius:var(--radius-pill);background:var(--blue)}
+.pool-more{display:flex;justify-content:space-between;align-items:center;padding:var(--space-3) var(--space-1) 0;font-size:var(--text-caption);color:var(--muted)}
+/* menu popover (topbar overflow) */
+.menu{position:relative}
+.menu-panel{position:absolute;right:0;top:calc(100% + 8px);min-width:150px;padding:var(--space-2);
+  border-radius:var(--radius-lg);background:var(--surface-solid);border:1px solid var(--hairline);
+  box-shadow:var(--shadow-md);display:none;flex-direction:column;gap:2px;z-index:var(--z-modal)}
+.menu.open .menu-panel{display:flex}
+.menu-panel button{text-align:left;padding:8px 12px;border-radius:var(--radius-sm);font-size:var(--text-footnote);color:var(--text)}
+.menu-panel button:hover{background:var(--group)}
+@media(max-width:1024px){.source-guide{grid-template-columns:1fr}
+  .sidebar{position:fixed;left:12px;right:12px;bottom:12px;top:auto;height:auto;flex-direction:row;
+    border-radius:var(--radius-xl);z-index:50}.brand,.sidebar-footer{display:none}
+  .nav{flex-direction:row;flex:1;justify-content:space-around}.nav-item span{display:none}
+  .app-shell{grid-template-columns:1fr}.content{padding-bottom:96px}}
+
+/* ===== Premium Apple System Style (No Gradients) ===== */
+:root{
+  --bg:#f5f5f7;
+  --surface-solid:#ffffff;
+  --group:#f2f2f7;
+  --text:#1d1d1f;
+  --muted:#6e6e73;
+  --hairline:rgba(60,60,67,.12);
+  --shadow-md:0 8px 30px rgba(0,0,0,.06);
+}
+
+body{
+  background:#f5f5f7;
+}
+
+body::before{
+  display:none;
+}
+
+.sidebar{
+  margin:14px;
+  height:calc(100vh - 28px);
+  border-radius:20px;
+  background:rgba(255,255,255,.72);
+  border:1px solid rgba(60,60,67,.08);
+  box-shadow:0 4px 18px rgba(0,0,0,.04);
+  backdrop-filter:blur(18px);
+}
+
+.brand-mark{
+  background:#1d1d1f;
+  box-shadow:none;
+}
+
+.nav-item{
+  min-height:40px;
+  border-radius:12px;
+}
+
+.nav-item.active{
+  background:#e8e8ed;
+  border:0;
+  box-shadow:none;
+}
+
+.topbar{
+  background:rgba(245,245,247,.88);
+  border-bottom:1px solid rgba(60,60,67,.08);
+}
+
+.topbar h1{
+  font-weight:700;
+  letter-spacing:-.03em;
+}
+
+.panel,.channel-card,.source-guide-item{
+  background:#ffffff;
+  border:1px solid rgba(60,60,67,.08);
+  box-shadow:0 1px 2px rgba(0,0,0,.03),0 12px 32px rgba(0,0,0,.04);
+  backdrop-filter:none;
+}
+
+.panel{
+  border-radius:22px;
+}
+
+.channel-card{
+  border-radius:18px;
+}
+
+.source-guide-item{
+  border-radius:16px;
+}
+
+.source-guide-item:hover,
+.channel-card:hover{
+  transform:none;
+}
+
+.btn-primary{
+  background:#007aff;
+  box-shadow:0 4px 12px rgba(0,122,255,.18);
+}
+
+.btn-secondary,
+.btn-icon,
+.search,
+.select{
+  background:#fff;
+  box-shadow:0 1px 3px rgba(0,0,0,.05);
+}
+
+.account-row:hover{
+  background:#fafafa;
+}
+
+.badge,.stat,.model-chips span{
+  background:#f2f2f7;
+  backdrop-filter:none;
+}
+
+.model-chips span{
+  border-color:rgba(60,60,67,.08);
+}
+
+
+/* ===== Ultra Premium Apple Enterprise UI ===== */
+
+:root{
+  --bg:#f7f7f8;
+  --surface-solid:#fff;
+  --text:#161617;
+  --muted:#86868b;
+  --hairline:rgba(0,0,0,.08);
+}
+
+body{
+  background:#f7f7f8;
+  letter-spacing:-0.01em;
+}
+
+/* layout refinement */
+.app-shell{
+  grid-template-columns:236px minmax(0,1fr);
+}
+
+.sidebar{
+  margin:20px;
+  height:calc(100vh - 40px);
+  border-radius:24px;
+  background:rgba(255,255,255,.82);
+  border:1px solid rgba(0,0,0,.06);
+  box-shadow:
+    0 1px 2px rgba(0,0,0,.03),
+    0 20px 50px rgba(0,0,0,.06);
+}
+
+.brand{
+  padding:12px 10px 28px;
+}
+
+.brand-mark{
+  width:42px;
+  height:42px;
+  border-radius:13px;
+  font-size:20px;
+}
+
+.nav{
+  gap:4px;
+}
+
+.nav-item{
+  height:44px;
+  border-radius:13px;
+  color:#555;
+}
+
+.nav-item.active{
+  background:#111;
+  color:#fff;
+}
+
+.content{
+  padding:40px 48px;
+  gap:28px;
+}
+
+.topbar{
+  padding:0 0 26px;
+  margin:0;
+  background:transparent;
+  border:0;
+}
+
+.topbar h1{
+  font-size:40px;
+  letter-spacing:-.045em;
+}
+
+.panel{
+  padding:34px;
+  border-radius:28px;
+  border:1px solid rgba(0,0,0,.06);
+  box-shadow:
+    0 1px 2px rgba(0,0,0,.03),
+    0 24px 70px rgba(0,0,0,.06);
+}
+
+.panel-title{
+  font-size:24px;
+  letter-spacing:-.03em;
+}
+
+.source-guide{
+  gap:16px;
+}
+
+.source-guide-item{
+  padding:22px;
+  border-radius:20px;
+  border:1px solid rgba(0,0,0,.06);
+  background:#fafafa;
+}
+
+.channel-card{
+  padding:26px;
+  border-radius:24px;
+  border:1px solid rgba(0,0,0,.07);
+  background:#fff;
+  box-shadow:none;
+}
+
+.channel-card-head .name{
+  font-size:25px;
+  letter-spacing:-.035em;
+}
+
+.search,.select{
+  height:44px;
+  border-radius:14px;
+}
+
+.btn{
+  height:38px;
+  border-radius:12px;
+}
+
+.btn-primary{
+  background:#007aff;
+  box-shadow:none;
+}
+
+.account-list{
+  border-radius:18px;
+  border:1px solid rgba(0,0,0,.08);
+}
+
+.account-row{
+  padding:18px 20px;
+}
+
+.account-row:hover{
+  background:#f7f7f7;
+}
+
+.account-title strong{
+  font-size:16px;
+}
+
+.badge{
+  border-radius:10px;
+}
+
+.model-chips span{
+  border-radius:10px;
+  background:#f5f5f7;
+}
+
+/* ===== 暗色适配（镜像这套高级浅色设计 · 采用 Apple 暗色规范配色） ===== */
+:root[data-theme="dark"]{
+  /* accent：Apple 暗色下统一提亮，token 化后 badge/stat/quota/source-tag 自动跟随 */
+  --blue:#0a84ff; --green:#30d158; --red:#ff453a; --orange:#ff9f0a; --teal:#40c8e0; --violet:#a78bfa;
+  /* surfaces */
+  --bg:#0a0a0b; --surface-solid:#161719; --group:#26262b;
+  --text:#f5f5f7; --muted:#98989f; --hairline:rgba(255,255,255,.09);
+  --shadow-md:0 8px 30px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{ background:var(--bg); }
+/* 侧边栏：悬浮半透明深色卡（镜像浅色的悬浮白卡） */
+:root[data-theme="dark"] .sidebar{
+  background:rgba(30,30,34,.82); border:1px solid rgba(255,255,255,.09);
+  box-shadow:0 1px 2px rgba(0,0,0,.4),0 20px 50px rgba(0,0,0,.55);
+}
+:root[data-theme="dark"] .nav-item{ color:#a6a6ae; }
+:root[data-theme="dark"] .nav-item:hover{ background:rgba(255,255,255,.06); color:#f5f5f7; }
+:root[data-theme="dark"] .nav-item.active{ background:#ededf0; color:#161617; } /* 镜像浅色的黑色药丸 */
+:root[data-theme="dark"] .nav-item.active svg{ color:#161617; }
+/* 面板 / 卡片 */
+:root[data-theme="dark"] .panel{
+  background:#161719; border:1px solid rgba(255,255,255,.08);
+  box-shadow:0 1px 2px rgba(0,0,0,.4),0 24px 70px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] .channel-card{ background:#1a1b1e; border:1px solid rgba(255,255,255,.08); box-shadow:none; }
+:root[data-theme="dark"] .source-guide-item{ background:#1e1f22; border:1px solid rgba(255,255,255,.07); }
+:root[data-theme="dark"] .account-list{ border:1px solid rgba(255,255,255,.08); }
+:root[data-theme="dark"] .account-row:hover{ background:rgba(255,255,255,.05); }
+/* 控件 */
+:root[data-theme="dark"] .btn-secondary,
+:root[data-theme="dark"] .btn-icon,
+:root[data-theme="dark"] .search,
+:root[data-theme="dark"] .select{ background:#26262b; border:1px solid rgba(255,255,255,.09); box-shadow:none; color:var(--text); }
+:root[data-theme="dark"] .btn-primary{ background:#0a84ff; box-shadow:none; }
+:root[data-theme="dark"] .pill-group{ background:#0e0e10; border:1px solid rgba(255,255,255,.07); }
+:root[data-theme="dark"] .pill-group button.selected{ background:#3a3a40; color:#fff; box-shadow:none; }
+/* chips / stats（tone 徽章沿用 accent token 自动提亮，无需在此改） */
+:root[data-theme="dark"] .stat,
+:root[data-theme="dark"] .model-chips span{ background:#26262b; }
+:root[data-theme="dark"] .model-chips span{ border-color:rgba(255,255,255,.08); color:#c7c7cf; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">C</div>
+      <div class="brand-text"><strong>CAPI</strong><span>聚合网关</span></div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>概览</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6"/></svg><span>用户</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6"/></svg><span>分组</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="3.4"/><path d="M10.4 12.6 20 3"/><path d="M16 7l3 3"/></svg><span>密钥</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 3 8l9 5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><span>模型</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M4 18l5-4 4 3 3-2 4 3"/></svg><span>绘图</span></button>
+      <button class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.5"/><ellipse cx="12" cy="12" rx="9" ry="3.8" transform="rotate(-30 12 12)"/></svg><span>Antigravity</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 6h6a4 4 0 0 1 0 8H8a4 4 0 0 0 0 4h2"/></svg><span>渠道</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg><span>日志</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg><span>设置</span></button>
+    </nav>
+    <div class="sidebar-footer"><span>Gateway</span><strong><span class="dot"></span>Online</strong></div>
+  </aside>
+  <main class="content">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Admin Console</p>
+        <h1>Antigravity</h1>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-primary"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>刷新</button>
+        <button class="btn-icon" title="切换主题" onclick="toggleTheme()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg></button>
+        <div class="menu" onclick="toggleMenu(this)">
+          <button class="btn-icon" title="更多"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
+          <div class="menu-panel">
+            <button onclick="toggleDensity(this)">舒适</button>
+            <button>首页</button>
+            <button>退出</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section class="panel">
+      <h2 class="panel-title">Antigravity 账号池</h2>
+      <div class="panel-toolbar">
+        <span class="hint">导入 Google OAuth JSON 或 refresh token 即可入池。</span>
+        <button class="btn btn-primary">新增 Antigravity 账号池</button>
+      </div>
+      <div class="source-guide">
+        <div class="source-guide-item">
+          <strong>Antigravity 导入（推荐）</strong>
+          <span>粘贴 Google OAuth 凭据 JSON 或 refresh token，调用前自动换取 accessToken。</span>
+        </div>
+        <div class="source-guide-item">
+          <strong>批量导入</strong>
+          <span>支持 JSON、ZIP、TXT；TXT 可使用 JSONL 或每行一个 refresh token。</span>
+        </div>
+      </div>
+      <div class="channel-card">
+        <div class="channel-card-head">
+          <div>
+            <div class="name">Antigravity 账号池</div>
+            <span class="url">https://daily-cloudcode-pa.googleapis.com</span>
+            <div class="stat-row">
+              <span class="stat"><b>12</b> 账号</span>
+              <span class="stat ok"><b>9</b> 可用</span>
+              <span class="stat bad"><b>2</b> 无效</span>
+              <span class="stat warn"><b>1</b> 未验证</span>
+              <span class="stat"><b>8</b> 可续期</span>
+              <span class="stat">自动检测 3 分钟前</span>
+            </div>
+          </div>
+          <div class="head-actions">
+            <span class="badge ok">正常</span>
+            <button class="btn btn-primary btn-sm">添加账号</button>
+            <button class="btn btn-secondary btn-sm">批量检测</button>
+            <button class="btn btn-secondary btn-sm">复检无效 2</button>
+            <button class="btn btn-secondary btn-sm">导出报告</button>
+            <button class="btn btn-secondary btn-sm">停用渠道</button>
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <input class="search" placeholder="搜索账号或错误" />
+          <select class="select"><option>账号池顺序</option><option>最久未用优先</option><option>最近使用优先</option><option>最早到期优先</option></select>
+          <div class="pill-group">
+            <button class="selected">全部 12</button><button>需关注</button><button>无效 2</button><button>有错误 1</button><button>可续期 8</button>
+          </div>
+        </div>
+
+        <div class="model-chips">
+          <span>claude-opus-4-6-thinking</span><span>claude-sonnet-4-6</span><span>gemini-3.8-flash-high</span><span>gemini-3-flash</span><span>gemini-3.1-pro-low</span><span>gemini-3.1-flash-image</span>
+        </div>
+
+        <div class="account-list">
+          <div class="account-row">
+            <div class="account-main">
+              <div class="account-title"><strong>alice.chen@gmail.com</strong><span class="source-tag">Antigravity</span></div>
+              <span class="account-sub">可自动续期 · 到期 12-18 · 套餐 Pro · 最近调用 8 分钟前 · 214 次</span>
+            </div>
+            <div class="quota">
+              <div class="quota-bar"><span>Opus 62%</span><div class="quota-track"><div class="quota-fill" style="width:62%"></div></div></div>
+              <div class="quota-bar"><span>Flash 34%</span><div class="quota-track"><div class="quota-fill" style="width:34%"></div></div></div>
+            </div>
+            <div class="account-meta"><span class="badge ok">可用</span><button class="btn btn-secondary btn-sm">检测</button><button class="btn btn-danger btn-sm">删除</button></div>
+          </div>
+          <div class="account-row">
+            <div class="account-main">
+              <div class="account-title"><strong>dev.bot@workspace.io</strong><span class="source-tag">导入</span></div>
+              <span class="account-sub">依赖网页会话 · 套餐 Free · 最近调用 1 小时前 · 57 次</span>
+            </div>
+            <div class="quota">
+              <div class="quota-bar"><span>Opus 12%</span><div class="quota-track"><div class="quota-fill" style="width:12%"></div></div></div>
+            </div>
+            <div class="account-meta"><span class="badge ok">可用</span><button class="btn btn-secondary btn-sm">检测</button><button class="btn btn-danger btn-sm">删除</button></div>
+          </div>
+          <div class="account-row">
+            <div class="account-main">
+              <div class="account-title"><strong>token-only-9a3f</strong><span class="source-tag">导入</span></div>
+              <span class="account-sub" style="color:var(--red)">凭据失效 · invalid_grant · 上次检测 20 分钟前</span>
+            </div>
+            <div class="account-meta"><span class="badge bad">无效</span><button class="btn btn-secondary btn-sm">检测</button><button class="btn btn-danger btn-sm">删除</button></div>
+          </div>
+          <div class="account-row">
+            <div class="account-main">
+              <div class="account-title"><strong>new.import@gmail.com</strong><span class="source-tag">Antigravity</span></div>
+              <span class="account-sub">仅 access token · 等待首次检测</span>
+            </div>
+            <div class="account-meta"><span class="badge warn">未验证</span><button class="btn btn-secondary btn-sm">检测</button><button class="btn btn-danger btn-sm">删除</button></div>
+          </div>
+        </div>
+        <div class="pool-more"><span>已显示 4 个，还有 8 个</span><button class="btn btn-secondary btn-sm">再显示 8 个</button></div>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+  const root=document.documentElement;
+  function toggleTheme(){root.dataset.theme=root.dataset.theme==="dark"?"light":"dark";}
+  function toggleDensity(b){root.dataset.density=root.dataset.density==="compact"?"comfortable":"compact";b.textContent=root.dataset.density==="compact"?"紧凑":"舒适";}
+  function toggleMenu(el){el.classList.toggle("open");}
+  document.querySelectorAll(".pill-group").forEach(g=>g.addEventListener("click",e=>{if(e.target.tagName==="BUTTON"){g.querySelectorAll("button").forEach(b=>b.classList.remove("selected"));e.target.classList.add("selected");}}));
+  document.addEventListener("click",e=>{if(!e.target.closest(".menu"))document.querySelectorAll(".menu.open").forEach(m=>m.classList.remove("open"));});
+</script>
+</body>
+</html>
