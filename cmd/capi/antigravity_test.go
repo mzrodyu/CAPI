@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -151,5 +152,30 @@ func TestParseDataURL(t *testing.T) {
 	}
 	if _, _, ok := parseDataURL("data:text/plain,notbase64"); ok {
 		t.Fatalf("non-base64 data URL should not parse")
+	}
+}
+
+func TestAntigravityChannelIsNotCodex(t *testing.T) {
+	// A first-class Antigravity pool must route through the antigravity path,
+	// never the codex path, even once it holds accounts.
+	channel := Channel{Provider: "antigravity", OpenAIAccounts: []OpenAIAccount{{ID: "a", AccessToken: "x", Source: "antigravity"}}}
+	if !isAntigravityChannel(channel) {
+		t.Fatalf("expected antigravity channel")
+	}
+	if isCodexChannel(channel) {
+		t.Fatalf("antigravity channel must not be treated as codex")
+	}
+	codex := Channel{Provider: "codex", OpenAIAccounts: []OpenAIAccount{{ID: "b", AccessToken: "x"}}}
+	if isAntigravityChannel(codex) || !isCodexChannel(codex) {
+		t.Fatalf("codex channel classification regressed")
+	}
+}
+
+func TestAntigravityClientSecretDecodes(t *testing.T) {
+	if antigravityOAuthClientSecret == "" {
+		t.Fatalf("client secret failed to decode")
+	}
+	if strings.ContainsAny(antigravityOAuthClientSecret, "\x00") {
+		t.Fatalf("client secret decoded to garbage")
 	}
 }
