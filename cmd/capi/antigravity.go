@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,8 +45,13 @@ const (
 	antigravityGeneratePath       = "/v1internal:generateContent"
 	antigravityStreamPath         = "/v1internal:streamGenerateContent"
 	antigravityLoadCodeAssistPath = "/v1internal:loadCodeAssist"
+	antigravityFetchModelsPath    = "/v1internal:fetchAvailableModels"
 
-	antigravityUserAgent = "antigravity/hub/2.9.1 darwin/arm64"
+	// antigravityDefaultClientVersion is the hub client version baked into the
+	// User-Agent. It is only a default — admins can override it from settings
+	// (AntigravitySettings.ClientVersion) so the UA can track upstream client
+	// bumps without a redeploy.
+	antigravityDefaultClientVersion = "2.9.1"
 
 	// A valid Google access token is reused until it is within this window of
 	// expiry, then refreshed under the shared openAIRefreshMu lock.
@@ -73,9 +79,10 @@ var antigravityOAuthClientSecret = func() string {
 // loadCodeAssist is only called once per account per process.
 var antigravityProjectCache sync.Map
 
-// antigravityModelIDs is the set of model IDs Antigravity exposes upstream. The
-// exposed ID is forwarded verbatim as the top-level "model" field; there is no
-// rename table. Admins add these to a channel's model list to route to them.
+// antigravityModelIDs is the default set of model IDs Antigravity exposes
+// upstream. It is only a fallback: once an admin saves a model list (typically
+// pulled live via fetchAvailableModels), antigravityModelsLocked returns that
+// instead, so the catalog updates without a redeploy.
 func antigravityModelIDs() []string {
 	return []string{
 		"claude-opus-4-6-thinking",
@@ -91,6 +98,22 @@ func antigravityModelIDs() []string {
 		"gemini-3.1-flash-lite",
 		"gemini-3.5-flash-lite",
 	}
+}
+
+// antigravityModelsLocked returns the admin-configured model catalog, or the
+// baked-in default when none is configured. Callers must hold s.mu.
+func (s *Server) antigravityModelsLocked() []string {
+	if configured := mergeStrings(nil, s.state.Settings.Antigravity.Models); len(configured) > 0 {
+		return configured
+	}
+	return antigravityModelIDs()
+}
+
+// antigravityModels is the locking wrapper around antigravityModelsLocked.
+func (s *Server) antigravityModels() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.antigravityModelsLocked()
 }
 
 func isAntigravitySource(source string) bool {
@@ -126,7 +149,7 @@ func (s *Server) ensureAntigravityChannelLocked(channel *Channel) bool {
 		channel.Provider = "antigravity"
 		changed = true
 	}
-	for _, modelID := range antigravityModelIDs() {
+	for _, modelID := range s.antigravityModelsLocked() {
 		if s.ensureImportedModelLocked(modelID) {
 			changed = true
 		}
@@ -217,7 +240,7 @@ func (s *Server) refreshAntigravityAccount(refreshToken string) (OpenAIRefreshRe
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", antigravityUserAgent)
+	request.Header.Set("User-Agent", s.antigravityUserAgentCanonical())
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
@@ -289,7 +312,7 @@ func (s *Server) exchangeAntigravityOAuthCode(code, verifier string) (OpenAIRefr
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", antigravityUserAgent)
+	request.Header.Set("User-Agent", s.antigravityUserAgentCanonical())
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
@@ -375,26 +398,24 @@ func (s *Server) resolveAntigravityProject(account OpenAIAccount, accessToken st
 	return project, nil
 }
 
-// antigravityUserAgents is the pool of realistic Antigravity desktop-client
-// User-Agent strings. Real clients report their host platform, so spreading
-// pooled accounts across the platform axis (while keeping the known-good client
-// version) avoids every account fingerprinting as one identical client from a
-// single server IP. Only the os/arch suffix varies — inventing version numbers
-// would risk looking less real, not more.
-var antigravityUserAgents = []string{
-	"antigravity/hub/2.9.1 darwin/arm64",
-	"antigravity/hub/2.9.1 darwin/x64",
-	"antigravity/hub/2.9.1 win32/x64",
-	"antigravity/hub/2.9.1 linux/x64",
+// antigravityPlatforms is the set of realistic host platforms an Antigravity
+// desktop client reports. Spreading pooled accounts across this axis (while the
+// client version stays whatever settings configure) avoids every account
+// fingerprinting as one identical client from a single server IP.
+var antigravityPlatforms = []string{
+	"darwin/arm64",
+	"darwin/x64",
+	"win32/x64",
+	"linux/x64",
 }
 
-// antigravityUserAgentFor returns a stable User-Agent for an account: the same
-// account always reports the same client (mirroring a real single-device user),
-// while different accounts spread deterministically across the pool. A stable
-// per-account UA is deliberately chosen over per-request rotation — a single
-// account flipping platforms every call looks more bot-like, not less. Falls
-// back to the canonical UA when the account has no identifier yet.
-func antigravityUserAgentFor(account OpenAIAccount) string {
+// antigravityPlatformFor returns a stable platform for an account: the same
+// account always reports the same platform (mirroring a real single-device
+// user), while different accounts spread deterministically across the pool. A
+// stable per-account platform is deliberately chosen over per-request rotation
+// — a single account flipping platforms every call looks more bot-like, not
+// less. Falls back to the first platform when the account has no identifier.
+func antigravityPlatformFor(account OpenAIAccount) string {
 	id := strings.TrimSpace(account.ID)
 	if id == "" {
 		id = strings.TrimSpace(account.AccountID)
@@ -403,17 +424,93 @@ func antigravityUserAgentFor(account OpenAIAccount) string {
 		id = strings.TrimSpace(account.Email)
 	}
 	if id == "" {
-		return antigravityUserAgent
+		return antigravityPlatforms[0]
 	}
 	hasher := fnv.New32a()
 	_, _ = hasher.Write([]byte(id))
-	return antigravityUserAgents[hasher.Sum32()%uint32(len(antigravityUserAgents))]
+	return antigravityPlatforms[hasher.Sum32()%uint32(len(antigravityPlatforms))]
+}
+
+// antigravityUserAgentFor builds the client UA for an account from the configured
+// version and the account's stable platform.
+func antigravityUserAgentFor(version string, account OpenAIAccount) string {
+	if strings.TrimSpace(version) == "" {
+		version = antigravityDefaultClientVersion
+	}
+	return "antigravity/hub/" + version + " " + antigravityPlatformFor(account)
+}
+
+// antigravityClientVersion returns the admin-configured client version, or the
+// baked-in default when unset.
+func (s *Server) antigravityClientVersion() string {
+	s.mu.Lock()
+	version := strings.TrimSpace(s.state.Settings.Antigravity.ClientVersion)
+	s.mu.Unlock()
+	if version == "" {
+		return antigravityDefaultClientVersion
+	}
+	return version
+}
+
+// antigravityUserAgentCanonical is the account-agnostic UA used on the OAuth
+// token endpoints (refresh/exchange), where per-account platform variety adds
+// nothing. It still tracks the configured version.
+func (s *Server) antigravityUserAgentCanonical() string {
+	return antigravityUserAgentFor(s.antigravityClientVersion(), OpenAIAccount{})
 }
 
 func (s *Server) setAntigravityHeaders(request *http.Request, account OpenAIAccount, accessToken string) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+accessToken)
-	request.Header.Set("User-Agent", antigravityUserAgentFor(account))
+	request.Header.Set("User-Agent", antigravityUserAgentFor(s.antigravityClientVersion(), account))
+}
+
+// fetchAntigravityModels asks the upstream which models the account can use, via
+// the same fetchAvailableModels call the real client makes. The available model
+// IDs are the keys of the top-level "models" map in the response.
+func (s *Server) fetchAntigravityModels(account OpenAIAccount, accessToken string) ([]string, error) {
+	project, err := s.resolveAntigravityProject(account, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(map[string]string{"project": project})
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequest(http.MethodPost, antigravityBaseURLProd+antigravityFetchModelsPath, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	s.setAntigravityHeaders(request, account, accessToken)
+
+	response, err := s.httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	content, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("fetchAvailableModels failed: %s", truncateString(strings.TrimSpace(string(content)), 300))
+	}
+
+	var parsed struct {
+		Models map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(content, &parsed); err != nil {
+		return nil, fmt.Errorf("fetchAvailableModels 响应不是有效 JSON")
+	}
+	ids := make([]string, 0, len(parsed.Models))
+	for id := range parsed.Models {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			ids = append(ids, trimmed)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // buildAntigravityPayload converts an OpenAI chat request into the Antigravity

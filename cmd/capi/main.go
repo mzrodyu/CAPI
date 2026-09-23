@@ -91,6 +91,17 @@ type AppSettings struct {
 	Auth        AuthSettings        `json:"auth,omitempty"`
 	CheckIn     CheckInSettings     `json:"checkIn,omitempty"`
 	Maintenance MaintenanceSettings `json:"maintenance,omitempty"`
+	Antigravity AntigravitySettings `json:"antigravity,omitempty"`
+}
+
+// AntigravitySettings holds admin-tunable Antigravity knobs so the client
+// version (used in the spoofed User-Agent) and the routable model catalog can
+// be updated from the UI without a redeploy. Empty fields fall back to the
+// baked-in defaults.
+type AntigravitySettings struct {
+	Managed       bool     `json:"managed,omitempty"`
+	ClientVersion string   `json:"clientVersion,omitempty"`
+	Models        []string `json:"models,omitempty"`
 }
 
 type MaintenanceSettings struct {
@@ -959,6 +970,7 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	admin.POST("/channels/:id/openai-oauth/complete", s.completeOpenAIOAuth)
 	admin.POST("/channels/:id/antigravity-oauth/start", s.startAntigravityOAuth)
 	admin.POST("/channels/:id/antigravity-oauth/complete", s.completeAntigravityOAuth)
+	admin.POST("/channels/:id/antigravity/available-models", s.probeAntigravityModels)
 	admin.POST("/channels/:id/openai-accounts/check", s.checkOpenAIAccounts)
 	admin.POST("/channels/:id/openai-accounts/deduplicate", s.deduplicateOpenAIAccounts)
 	admin.DELETE("/channels/:id/openai-accounts/:accountId", s.deleteOpenAIAccount)
@@ -982,6 +994,8 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	admin.PATCH("/settings/check-in", s.updateCheckInSettings)
 	admin.GET("/settings/maintenance", s.getMaintenanceSettings)
 	admin.PATCH("/settings/maintenance", s.updateMaintenanceSettings)
+	admin.GET("/settings/antigravity", s.getAntigravitySettings)
+	admin.PATCH("/settings/antigravity", s.updateAntigravitySettings)
 	admin.GET("/backup", s.exportBackup)
 	admin.POST("/restore", s.restoreBackup)
 
@@ -1577,6 +1591,140 @@ func (s *Server) updateMaintenanceSettings(c *gin.Context) {
 	s.pruneOperationalHistoryLocked()
 	s.saveStateLocked()
 	c.JSON(http.StatusOK, gin.H{"maintenance": s.maintenanceSettingsLocked()})
+}
+
+// antigravitySettingsLocked returns the stored Antigravity settings with empty
+// fields resolved to their effective defaults, for display. Callers hold s.mu.
+func (s *Server) antigravitySettingsLocked() AntigravitySettings {
+	settings := s.state.Settings.Antigravity
+	if strings.TrimSpace(settings.ClientVersion) == "" {
+		settings.ClientVersion = antigravityDefaultClientVersion
+	}
+	settings.Models = s.antigravityModelsLocked()
+	return settings
+}
+
+func (s *Server) getAntigravitySettings(c *gin.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c.JSON(http.StatusOK, gin.H{"antigravity": s.antigravitySettingsLocked()})
+}
+
+func (s *Server) updateAntigravitySettings(c *gin.Context) {
+	var body struct {
+		ClientVersion string   `json:"clientVersion"`
+		Models        []string `json:"models"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		validationError(c, "无效的 Antigravity 设置")
+		return
+	}
+	version := strings.TrimSpace(body.ClientVersion)
+	if version != "" && !antigravityVersionValid(version) {
+		validationError(c, "客户端版本格式不正确，只能包含数字、点和短横线")
+		return
+	}
+	models := mergeStrings(nil, body.Models)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Settings.Antigravity = AntigravitySettings{
+		Managed:       true,
+		ClientVersion: version,
+		Models:        models,
+	}
+	// Register the effective catalog so routing resolves the models immediately.
+	for _, modelID := range s.antigravityModelsLocked() {
+		s.ensureImportedModelLocked(modelID)
+	}
+	s.saveStateLocked()
+	c.JSON(http.StatusOK, gin.H{"antigravity": s.antigravitySettingsLocked()})
+}
+
+// antigravityVersionValid accepts dotted versions with optional pre-release or
+// build suffixes (e.g. 2.9.1, 2.10.0-beta, 3.0.0+build.2) and rejects anything
+// that could smuggle spaces or control characters into the User-Agent.
+func antigravityVersionValid(version string) bool {
+	if len(version) > 32 {
+		return false
+	}
+	hasAlnum := false
+	for _, r := range version {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			hasAlnum = true
+		case r == '.' || r == '-' || r == '+' || r == '_':
+		default:
+			return false
+		}
+	}
+	return hasAlnum
+}
+
+// pickAntigravityProbeAccount selects an account from the channel to probe the
+// upstream model catalog with: a specific one when accountID is set, otherwise a
+// healthy account, otherwise any account that carries a usable credential.
+func pickAntigravityProbeAccount(channel Channel, accountID string) (OpenAIAccount, bool) {
+	var fallback OpenAIAccount
+	haveFallback := false
+	for _, account := range channel.OpenAIAccounts {
+		if accountID != "" && account.ID != accountID {
+			continue
+		}
+		if strings.TrimSpace(account.AccessToken) == "" && strings.TrimSpace(account.RefreshToken) == "" && strings.TrimSpace(account.SessionToken) == "" {
+			continue
+		}
+		if accountID != "" || account.Status == "healthy" {
+			return account, true
+		}
+		if !haveFallback {
+			fallback = account
+			haveFallback = true
+		}
+	}
+	return fallback, haveFallback
+}
+
+// probeAntigravityModels pulls the live model catalog from upstream using one of
+// the channel's own accounts (fetchAvailableModels). The admin then reviews the
+// result and saves it via updateAntigravitySettings.
+func (s *Server) probeAntigravityModels(c *gin.Context) {
+	accountIDFilter := strings.TrimSpace(c.Query("accountId"))
+
+	s.mu.Lock()
+	channel := s.findChannel(c.Param("id"))
+	if channel == nil {
+		s.mu.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "Channel not found"}})
+		return
+	}
+	if !isAntigravityChannel(*channel) {
+		s.mu.Unlock()
+		validationError(c, "该渠道不是 Antigravity 账号池")
+		return
+	}
+	account, ok := pickAntigravityProbeAccount(*channel, accountIDFilter)
+	s.mu.Unlock()
+	if !ok {
+		validationError(c, "该账号池没有可用账号，请先导入或授权一个 Antigravity 账号")
+		return
+	}
+
+	accessToken, err := s.resolveOpenAIAccountAccessToken(account)
+	if err != nil {
+		s.openAIError(c, http.StatusBadGateway, "antigravity_token_unavailable", err.Error(), "api_error", nil)
+		return
+	}
+	models, err := s.fetchAntigravityModels(account, accessToken)
+	if err != nil {
+		s.openAIError(c, http.StatusBadGateway, "antigravity_models_unavailable", err.Error(), "api_error", nil)
+		return
+	}
+	if len(models) == 0 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": "上游未返回可用模型"}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"models": models, "account": publicOpenAIAccount(account)})
 }
 
 func (s *Server) exportBackup(c *gin.Context) {
@@ -7078,7 +7226,7 @@ func chatCompletionUsageFromCodex(usage gin.H, messages []ChatMessage) gin.H {
 
 func (s *Server) fetchUpstreamModelIDs(channel Channel, upstreamKey string) ([]string, error) {
 	if isAntigravityChannel(channel) {
-		return antigravityModelIDs(), nil
+		return s.antigravityModels(), nil
 	}
 	if isCodexChannel(channel) {
 		return codexChannelModelIDs(), nil
