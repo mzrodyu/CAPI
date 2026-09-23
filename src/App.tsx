@@ -1115,6 +1115,24 @@ function App() {
     return result;
   }
 
+  async function startAntigravityOAuth(channelId: string) {
+    return fetchJson<{ authorizeUrl: string; state: string; redirectUri: string }>(
+      `/api/channels/${encodeURIComponent(channelId)}/antigravity-oauth/start`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+  }
+
+  async function completeAntigravityOAuth(channelId: string, payload: { callbackUrl?: string; code?: string; state?: string }) {
+    const result = await fetchJson<{ account: OpenAIAccount; channel: Channel }>(
+      `/api/channels/${encodeURIComponent(channelId)}/antigravity-oauth/complete`,
+      { method: "POST", body: JSON.stringify(payload) }
+    );
+    setChannels((current) => current.map((channel) => (channel.id === result.channel.id ? normalizeChannel(result.channel) : channel)));
+    setToast("已通过 Google 授权添加账号");
+    window.setTimeout(() => setToast(""), 2400);
+    return result;
+  }
+
   async function createModel(model: ModelCreate) {
     const data = await fetchJson<{ model: ModelItem }>("/api/models", {
       method: "POST",
@@ -1346,7 +1364,7 @@ function App() {
         {active === "keys" && <KeysView selectedUser={selectedUser} onCreateKey={createAPIKeyForUser} onUpdateKey={updateAPIKey} onDeleteKey={deleteAPIKey} />}
         {active === "models" && <ModelsView models={models} onCopy={copyAndToast} onCreate={createModel} onUpdate={updateModel} onDelete={deleteModel} />}
         {active === "drawing" && <DrawingView variant="drawing" channels={channels} onCreate={createChannel} onImport={importOpenAIAccounts} onCheckAccounts={checkOpenAIAccounts} onDeduplicateAccounts={deduplicateOpenAIAccounts} onDeleteAccount={deleteOpenAIAccount} onUpdate={updateChannel} onStartOAuth={startOpenAIOAuth} onCompleteOAuth={completeOpenAIOAuth} />}
-        {active === "antigravity" && <DrawingView variant="antigravity" channels={channels} onCreate={createChannel} onImport={importOpenAIAccounts} onCheckAccounts={checkOpenAIAccounts} onDeduplicateAccounts={deduplicateOpenAIAccounts} onDeleteAccount={deleteOpenAIAccount} onUpdate={updateChannel} onStartOAuth={startOpenAIOAuth} onCompleteOAuth={completeOpenAIOAuth} />}
+        {active === "antigravity" && <DrawingView variant="antigravity" channels={channels} onCreate={createChannel} onImport={importOpenAIAccounts} onCheckAccounts={checkOpenAIAccounts} onDeduplicateAccounts={deduplicateOpenAIAccounts} onDeleteAccount={deleteOpenAIAccount} onUpdate={updateChannel} onStartOAuth={startAntigravityOAuth} onCompleteOAuth={completeAntigravityOAuth} />}
         {active === "channels" && <ChannelsView channels={channels} groups={groups} onUpdate={updateChannel} onCreate={createChannel} onImport={importOpenAIAccounts} onDelete={deleteChannel} onSyncModels={syncChannelModels} onCheck={checkChannel} />}
         {active === "logs" && <LogsView logs={logs} onCopy={copyAndToast} />}
         {active === "settings" && <SettingsView models={models} channels={channels} groups={groups} />}
@@ -3379,6 +3397,7 @@ function DrawingView({
         {oauthChannelId && (
           <OpenAIOAuthModal
             channelId={oauthChannelId}
+            variant={isAntigravity ? "antigravity" : "openai"}
             onStart={onStartOAuth}
             onComplete={onCompleteOAuth}
             onClose={() => setOAuthChannelId("")}
@@ -3387,12 +3406,17 @@ function DrawingView({
         {addAccountChannelId && (
           <AccountAddModal
             busy={busy !== ""}
+            variant={variant}
             onAuthSession={() => {
               setAuthSessionChannelId(addAccountChannelId);
               setAddAccountChannelId("");
             }}
             onAntigravity={() => {
               setAntigravityChannelId(addAccountChannelId);
+              setAddAccountChannelId("");
+            }}
+            onOAuth={() => {
+              setOAuthChannelId(addAccountChannelId);
               setAddAccountChannelId("");
             }}
             onImport={async (file) => {
@@ -3424,17 +3448,22 @@ function DrawingView({
 
 function AccountAddModal({
   busy,
+  variant = "drawing",
   onAuthSession,
   onAntigravity,
+  onOAuth,
   onImport,
   onClose
 }: {
   busy: boolean;
+  variant?: "drawing" | "antigravity";
   onAuthSession: () => void;
   onAntigravity: () => void;
+  onOAuth: () => void;
   onImport: (file: File) => Promise<void>;
   onClose: () => void;
 }) {
+  const isAntigravity = variant === "antigravity";
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card account-add-modal" onClick={(event) => event.stopPropagation()}>
@@ -3446,16 +3475,26 @@ function AccountAddModal({
           <button type="button" className="icon-button" onClick={onClose}>×</button>
         </div>
         <div className="account-add-options">
-          <button type="button" className="account-add-option recommended" onClick={onAuthSession} disabled={busy}>
-            <span className="account-add-icon">A</span>
-            <strong>导入网页会话</strong>
-            <small>粘贴完整 authsession JSON，保留 sessionToken</small>
-          </button>
-          <button type="button" className="account-add-option" onClick={onAntigravity} disabled={busy}>
-            <span className="account-add-icon">G</span>
-            <strong>导入 Antigravity</strong>
-            <small>粘贴 Google OAuth JSON 或 refresh token</small>
-          </button>
+          {isAntigravity ? (
+            <>
+              <button type="button" className="account-add-option recommended" onClick={onOAuth} disabled={busy}>
+                <span className="account-add-icon">G</span>
+                <strong>本地授权登录</strong>
+                <small>用 Google 账号登录授权，自动获取 refresh token</small>
+              </button>
+              <button type="button" className="account-add-option" onClick={onAntigravity} disabled={busy}>
+                <span className="account-add-icon">T</span>
+                <strong>导入 Antigravity 凭据</strong>
+                <small>已有 Google OAuth JSON 或 refresh token 时粘贴</small>
+              </button>
+            </>
+          ) : (
+            <button type="button" className="account-add-option recommended" onClick={onAuthSession} disabled={busy}>
+              <span className="account-add-icon">A</span>
+              <strong>导入网页会话</strong>
+              <small>粘贴完整 authsession JSON，保留 sessionToken</small>
+            </button>
+          )}
           <label className={`account-add-option${busy ? " disabled" : ""}`}>
             <span className="account-add-icon">J</span>
             <strong>{busy ? "导入中" : "导入 JSON / ZIP / TXT"}</strong>
@@ -3592,15 +3631,18 @@ function AntigravityModal({ onImport, onClose }: { onImport: (token: string) => 
 
 function OpenAIOAuthModal({
   channelId,
+  variant = "openai",
   onStart,
   onComplete,
   onClose
 }: {
   channelId: string;
+  variant?: "openai" | "antigravity";
   onStart: (channelId: string) => Promise<{ authorizeUrl: string; state: string; redirectUri: string }>;
   onComplete: (channelId: string, payload: { callbackUrl?: string; code?: string; state?: string }) => Promise<unknown>;
   onClose: () => void;
 }) {
+  const isAntigravity = variant === "antigravity";
   const [authorizeUrl, setAuthorizeUrl] = useState("");
   const [state, setState] = useState("");
   const [callback, setCallback] = useState("");
@@ -3643,10 +3685,10 @@ function OpenAIOAuthModal({
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
-          <strong>OAuth 授权添加网页账号</strong>
+          <strong>{isAntigravity ? "本地授权添加 Antigravity 账号" : "OAuth 授权添加网页账号"}</strong>
           <button type="button" className="icon-button" onClick={onClose}>×</button>
         </div>
-        <p className="muted-inline">使用 ChatGPT 网页兼容的 OAuth 客户端获取 refresh_token，只调用网页 backend-api，不会走 Codex 接口。</p>
+        <p className="muted-inline">{isAntigravity ? "用 Google 账号登录授权 Antigravity 客户端，服务端换取 refresh_token 后加入账号池，凭据只保存在本服务。" : "使用 ChatGPT 网页兼容的 OAuth 客户端获取 refresh_token，只调用网页 backend-api，不会走 Codex 接口。"}</p>
         <ol className="oauth-steps">
           <li>
             <button type="button" className="primary-button" onClick={begin} disabled={busy}>
@@ -3655,7 +3697,7 @@ function OpenAIOAuthModal({
             {authorizeUrl && (
               <div className="oauth-link">
                 <input readOnly value={authorizeUrl} onFocus={(event) => event.target.select()} />
-                <span className="muted-inline">若未自动打开，复制到浏览器手动访问，用要添加的 ChatGPT 账号登录授权。</span>
+                <span className="muted-inline">{isAntigravity ? "若未自动打开，复制到浏览器手动访问，用要添加的 Google 账号登录授权。" : "若未自动打开，复制到浏览器手动访问，用要添加的 ChatGPT 账号登录授权。"}</span>
               </div>
             )}
           </li>
@@ -3663,7 +3705,7 @@ function OpenAIOAuthModal({
             <label>② 粘贴授权后浏览器跳转的完整回调地址</label>
             <input
               value={callback}
-              placeholder="https://platform.openai.com/auth/callback?code=...&state=..."
+              placeholder={isAntigravity ? "http://localhost:8788/oauth2callback?code=...&state=..." : "https://platform.openai.com/auth/callback?code=...&state=..."}
               onChange={(event) => setCallback(event.target.value)}
               disabled={!authorizeUrl || busy}
             />

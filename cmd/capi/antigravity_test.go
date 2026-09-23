@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -177,5 +178,37 @@ func TestAntigravityClientSecretDecodes(t *testing.T) {
 	}
 	if strings.ContainsAny(antigravityOAuthClientSecret, "\x00") {
 		t.Fatalf("client secret decoded to garbage")
+	}
+}
+
+func TestAntigravityAuthorizeURL(t *testing.T) {
+	raw := antigravityAuthorizeURL("chal-123", "state-abc")
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("authorize URL does not parse: %v", err)
+	}
+	if got := parsed.Scheme + "://" + parsed.Host + parsed.Path; got != antigravityOAuthAuthorizeEndpoint {
+		t.Fatalf("authorize endpoint = %q, want %q", got, antigravityOAuthAuthorizeEndpoint)
+	}
+	query := parsed.Query()
+	checks := map[string]string{
+		"response_type":         "code",
+		"client_id":             antigravityOAuthClientID,
+		"redirect_uri":          antigravityOAuthRedirectURI,
+		"scope":                 antigravityOAuthScope,
+		"code_challenge":        "chal-123",
+		"code_challenge_method": "S256",
+		"access_type":           "offline",
+		"prompt":                "consent",
+		"state":                 "state-abc",
+	}
+	for key, want := range checks {
+		if got := query.Get(key); got != want {
+			t.Fatalf("authorize param %q = %q, want %q", key, got, want)
+		}
+	}
+	// A refresh token is only issued when cloud-platform scope is granted.
+	if !strings.Contains(query.Get("scope"), "cloud-platform") {
+		t.Fatalf("scope must request cloud-platform, got %q", query.Get("scope"))
 	}
 }
