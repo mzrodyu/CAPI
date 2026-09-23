@@ -363,6 +363,7 @@ type IconName =
   | "route"
   | "logs"
   | "settings"
+  | "orbit"
   | "search"
   | "copy"
   | "ban"
@@ -379,6 +380,7 @@ const iconPaths: Record<IconName, string> = {
   image: "M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM8.5 11a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM21 16l-5-5L5 21",
   route: "M4 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM20 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM7 16h3a4 4 0 0 0 4-4V8h3",
   logs: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h6",
+  orbit: "M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10ZM3 12a9 3 0 1 0 18 0 9 3 0 1 0-18 0Z",
   settings: "M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 8.92 4a1.65 1.65 0 0 0 1-1.51V2a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.31.39.57.71.71.23.1.49.18.8.2H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z",
   search: "M21 21l-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z",
   copy: "M8 8h11a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1ZM4 16H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v1",
@@ -438,6 +440,7 @@ const navItems = [
   { id: "keys", label: "密钥", icon: "key" },
   { id: "models", label: "模型", icon: "models" },
   { id: "drawing", label: "绘图", icon: "image" },
+  { id: "antigravity", label: "Antigravity", icon: "orbit" },
   { id: "channels", label: "渠道", icon: "route" },
   { id: "logs", label: "日志", icon: "logs" },
   { id: "settings", label: "设置", icon: "settings" }
@@ -1342,7 +1345,8 @@ function App() {
         {active === "groups" && <GroupsView groups={groups} onCreate={createGroup} onUpdate={updateGroup} onDelete={deleteGroup} />}
         {active === "keys" && <KeysView selectedUser={selectedUser} onCreateKey={createAPIKeyForUser} onUpdateKey={updateAPIKey} onDeleteKey={deleteAPIKey} />}
         {active === "models" && <ModelsView models={models} onCopy={copyAndToast} onCreate={createModel} onUpdate={updateModel} onDelete={deleteModel} />}
-        {active === "drawing" && <DrawingView channels={channels} onCreate={createChannel} onImport={importOpenAIAccounts} onCheckAccounts={checkOpenAIAccounts} onDeduplicateAccounts={deduplicateOpenAIAccounts} onDeleteAccount={deleteOpenAIAccount} onUpdate={updateChannel} onStartOAuth={startOpenAIOAuth} onCompleteOAuth={completeOpenAIOAuth} />}
+        {active === "drawing" && <DrawingView variant="drawing" channels={channels} onCreate={createChannel} onImport={importOpenAIAccounts} onCheckAccounts={checkOpenAIAccounts} onDeduplicateAccounts={deduplicateOpenAIAccounts} onDeleteAccount={deleteOpenAIAccount} onUpdate={updateChannel} onStartOAuth={startOpenAIOAuth} onCompleteOAuth={completeOpenAIOAuth} />}
+        {active === "antigravity" && <DrawingView variant="antigravity" channels={channels} onCreate={createChannel} onImport={importOpenAIAccounts} onCheckAccounts={checkOpenAIAccounts} onDeduplicateAccounts={deduplicateOpenAIAccounts} onDeleteAccount={deleteOpenAIAccount} onUpdate={updateChannel} onStartOAuth={startOpenAIOAuth} onCompleteOAuth={completeOpenAIOAuth} />}
         {active === "channels" && <ChannelsView channels={channels} groups={groups} onUpdate={updateChannel} onCreate={createChannel} onImport={importOpenAIAccounts} onDelete={deleteChannel} onSyncModels={syncChannelModels} onCheck={checkChannel} />}
         {active === "logs" && <LogsView logs={logs} onCopy={copyAndToast} />}
         {active === "settings" && <SettingsView models={models} channels={channels} groups={groups} />}
@@ -3054,7 +3058,8 @@ function DrawingView({
   onDeleteAccount,
   onUpdate,
   onStartOAuth,
-  onCompleteOAuth
+  onCompleteOAuth,
+  variant = "drawing"
 }: {
   channels: Channel[];
   onCreate: (channel?: ChannelCreate) => Promise<void>;
@@ -3065,8 +3070,14 @@ function DrawingView({
   onUpdate: (id: string, patch: ChannelPatch) => Promise<void>;
   onStartOAuth: (channelId: string) => Promise<{ authorizeUrl: string; state: string; redirectUri: string }>;
   onCompleteOAuth: (channelId: string, payload: { callbackUrl?: string; code?: string; state?: string }) => Promise<unknown>;
+  variant?: "drawing" | "antigravity";
 }) {
-  const drawingChannels = channels.filter((channel) => channel.provider === "codex" || channel.provider === "antigravity" || channel.provider === "openai" || arrayOf(channel.models).some((model) => model.includes("image")));
+  const isAntigravity = variant === "antigravity";
+  const drawingChannels = channels.filter((channel) =>
+    isAntigravity
+      ? channel.provider === "antigravity"
+      : channel.provider !== "antigravity" && (channel.provider === "codex" || channel.provider === "openai" || arrayOf(channel.models).some((model) => model.includes("image")))
+  );
   const [busy, setBusy] = useState("");
   const [accountVisibleCounts, setAccountVisibleCounts] = useState<Record<string, number>>({});
   const [accountFilters, setAccountFilters] = useState<Record<string, "all" | "attention" | "invalid" | "error" | "refreshable">>({});
@@ -3159,21 +3170,39 @@ function DrawingView({
   }
 
   return (
-      <Panel title="账号池">
+      <Panel title={isAntigravity ? "Antigravity 账号池" : "账号池"}>
         <div className="panel-toolbar">
-          <span className="muted-inline">账号有两种来源，任选其一即可。</span>
-          <button className="primary-button" onClick={() => onCreate(channelCreateFromTemplate("codex"))}>新增账号池渠道</button>
-          <button className="secondary-button" onClick={() => onCreate(channelCreateFromTemplate("antigravity"))}>新增 Antigravity 账号池</button>
+          <span className="muted-inline">{isAntigravity ? "导入 Google OAuth JSON 或 refresh token 即可入池。" : "账号有两种来源，任选其一即可。"}</span>
+          {isAntigravity ? (
+            <button className="primary-button" onClick={() => onCreate(channelCreateFromTemplate("antigravity"))}>新增 Antigravity 账号池</button>
+          ) : (
+            <button className="primary-button" onClick={() => onCreate(channelCreateFromTemplate("codex"))}>新增账号池渠道</button>
+          )}
         </div>
         <div className="source-guide">
-          <div className="source-guide-item">
-            <strong>网页会话（推荐）</strong>
-            <span>支持完整 auth/session JSON 或浏览器 Session Cookie，并在调用前重新获取 accessToken。</span>
-          </div>
-          <div className="source-guide-item">
-            <strong>批量导入</strong>
-            <span>支持 JSON、ZIP、TXT；TXT 可使用 JSONL 或每行一个 access token。</span>
-          </div>
+          {isAntigravity ? (
+            <>
+              <div className="source-guide-item">
+                <strong>Antigravity 导入（推荐）</strong>
+                <span>粘贴 Google OAuth 凭据 JSON 或 refresh token，调用前自动换取 accessToken。</span>
+              </div>
+              <div className="source-guide-item">
+                <strong>批量导入</strong>
+                <span>支持 JSON、ZIP、TXT；TXT 可使用 JSONL 或每行一个 refresh token。</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="source-guide-item">
+                <strong>网页会话（推荐）</strong>
+                <span>支持完整 auth/session JSON 或浏览器 Session Cookie，并在调用前重新获取 accessToken。</span>
+              </div>
+              <div className="source-guide-item">
+                <strong>批量导入</strong>
+                <span>支持 JSON、ZIP、TXT；TXT 可使用 JSONL 或每行一个 access token。</span>
+              </div>
+            </>
+          )}
         </div>
         <div className="channels-stack">
           {drawingChannels.map((channel) => {
@@ -3345,7 +3374,7 @@ function DrawingView({
               </div>
             );
           })}
-          {drawingChannels.length === 0 && <Empty text="暂无绘图渠道，先新增一个 OpenAI 账号池渠道" />}
+          {drawingChannels.length === 0 && <Empty text={isAntigravity ? "暂无 Antigravity 渠道，先新增一个 Antigravity 账号池" : "暂无绘图渠道，先新增一个 OpenAI 账号池渠道"} />}
         </div>
         {oauthChannelId && (
           <OpenAIOAuthModal
